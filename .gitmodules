@@ -1,0 +1,6 @@
+[submodule "gym"]
+	path = gym
+	url = https://github.com/jpreiss/gym.git
+[submodule "baselines"]
+	path = baselines
+	url = https://github.com/jpreiss/baselines.git
