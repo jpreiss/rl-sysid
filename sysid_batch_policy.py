@@ -20,45 +20,31 @@ class SysIDPolicy(object):
 
     def _init(self, ob_space, ac_space, sysid_dim, latent_dim, hid_size, n_hid, gaussian_fixed_var=True):
         assert isinstance(ob_space, gym.spaces.Box)
+        assert isinstance(ac_space, gym.spaces.Box)
+        assert len(ob_space.shape) == 1
+        assert len(ac_space.shape) == 1
+        ob_dim = ob_space.shape[0] - sysid_dim
+        ac_dim = ac_space.shape[0]
 
         self.pdtype = pdtype = make_pdtype(ac_space)
         sequence_length = None
 
-        assert len(ob_space.shape) == 1
-        ob_dim = ob_space.shape[0] - sysid_dim
-
-        assert len(ac_space.shape) == 1
-        ac_dim = ac_space.shape[0]
-
         ob = U.get_placeholder(name="ob", dtype=tf.float32, shape=[sequence_length] + list(ob_space.shape))
-        
         with tf.variable_scope("obfilter"):
             self.ob_rms = RunningMeanStd(shape=ob_space.shape)
-
         obz = tf.clip_by_value((ob - self.ob_rms.mean) / self.ob_rms.std, -5.0, 5.0)
-        print("ob_dim={}, sysid_dim={}".format(ob_dim, sysid_dim))
         obz, sysidz = tf.split(obz, [ob_dim, sysid_dim], axis=1)
 
-        #for i in range(num_hid_layers):
-            #last_out = tf.nn.tanh(U.dense(last_out, hid_size, "vffc%i"%(i+1), weight_init=U.normc_initializer(1.0)))
-        #self.vpred = U.dense(last_out, 1, "vffinal", weight_init=U.normc_initializer(1.0))[:,0]
-        self.vpred = MLPModule(obz, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+        self.embed = MLPModule(sysidz, n_hid, hid_size, 0.1, latent_dim, "embed")
 
-        mean = MLPModule(obz, n_hid, hid_size, 0.01, ac_dim, "pol")
+        obz_and_embed = tf.concat([obz, self.embed], axis=1)
+
+        self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+
+        mean = MLPModule(obz_and_embed, n_hid, hid_size, 0.01, ac_dim, "pol")
         logstd = tf.get_variable(name="logstd", shape=[1, ac_dim], 
             initializer=tf.zeros_initializer())
         pdparam = U.concatenate([mean, mean * 0.0 + logstd], axis=1)
-
-        #last_out = obz
-        #for i in range(num_hid_layers):
-            #last_out = tf.nn.tanh(U.dense(last_out, hid_size, "polfc%i"%(i+1), weight_init=U.normc_initializer(1.0)))
-        #if gaussian_fixed_var and isinstance(ac_space, gym.spaces.Box):
-            #mean = U.dense(last_out, pdtype.param_shape()[0]//2, "polfinal", U.normc_initializer(0.01))            
-            #logstd = tf.get_variable(name="logstd", shape=[1, pdtype.param_shape()[0]//2], initializer=tf.zeros_initializer())
-            #pdparam = U.concatenate([mean, mean * 0.0 + logstd], axis=1)
-        #else:
-            #pdparam = U.dense(last_out, pdtype.param_shape()[0], "polfinal", U.normc_initializer(0.01))
-
         self.pd = pdtype.pdfromflat(pdparam)
 
         self.state_in = []
