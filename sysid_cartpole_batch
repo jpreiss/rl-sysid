@@ -1,0 +1,2 @@
+#!/bin/bash
+PYTHONPATH="./:./baselines" python3 baselines/baselines/ppo1/run_sysid_batch.py --env CartPole-SysID-Batch-v0
