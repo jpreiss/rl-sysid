@@ -51,6 +51,7 @@ class SysIDPolicy(object):
         pdparam = U.concatenate([mean, mean * 0.0 + logstd], axis=1)
         self.pd = pdtype.pdfromflat(pdparam)
 
+        # SysID inputs, network, and loss function
         traj_ob = U.get_placeholder(name="traj_ob",
             dtype=tf.float32, shape=[None, traj_len, ob_dim])
         traj_ac = U.get_placeholder(name="traj_ac",
@@ -59,6 +60,8 @@ class SysIDPolicy(object):
             [traj_ob, traj_ac], axis=2))
         self.traj2embed = MLPModule(trajs_flat,
             n_hid, hid_size, 1.0, latent_dim, "traj2embed")
+        self.sysid_err_supervised = tf.losses.mean_squared_error(
+            self.embed, self.traj2embed)
 
         self.state_in = []
         self.state_out = []
