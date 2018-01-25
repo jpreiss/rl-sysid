@@ -31,6 +31,7 @@ class SysIDPolicy(object):
         self.traj_len = traj_len
         self.latent_dim = latent_dim
         self.pdtype = pdtype = make_pdtype(ac_space)
+        self.alpha_sysid = 1.0
         sequence_length = None
 
         self.ob = U.get_placeholder(name="ob", dtype=tf.float32, shape=[sequence_length] + list(ob_space.shape))
@@ -43,7 +44,8 @@ class SysIDPolicy(object):
 
         obz_and_embed = tf.concat([obz, self.embed], axis=1)
 
-        self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+        #self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+        self.vpred = MLPModule(obz, n_hid, hid_size, 1.0, 1, "vf")[:,0]
 
         mean = MLPModule(obz_and_embed, n_hid, hid_size, 0.01, ac_dim, "pol")
         logstd = tf.get_variable(name="logstd", shape=[1, ac_dim], 
@@ -52,16 +54,16 @@ class SysIDPolicy(object):
         self.pd = pdtype.pdfromflat(pdparam)
 
         # SysID inputs, network, and loss function
-        traj_ob = U.get_placeholder(name="traj_ob",
+        self.traj_ob = U.get_placeholder(name="traj_ob",
             dtype=tf.float32, shape=[None, traj_len, ob_dim])
-        traj_ac = U.get_placeholder(name="traj_ac",
+        self.traj_ac = U.get_placeholder(name="traj_ac",
             dtype=tf.float32, shape=[None, traj_len, ac_dim])
         trajs_flat = tf.layers.flatten(tf.concat(
-            [traj_ob, traj_ac], axis=2))
+            [self.traj_ob, self.traj_ac], axis=2))
         self.traj2embed = MLPModule(trajs_flat,
             n_hid, hid_size, 1.0, latent_dim, "traj2embed")
         self.sysid_err_supervised = tf.losses.mean_squared_error(
-            self.embed, self.traj2embed)
+            tf.stop_gradient(self.embed), self.traj2embed)
 
         self.state_in = []
         self.state_out = []
@@ -81,6 +83,15 @@ class SysIDPolicy(object):
         sess = tf.get_default_session()
         embed = sess.run(self.embed, feed_dict={self.ob: sysid_vals})
         return np.squeeze(embed)
+
+    def estimate_sysid(self, ob_trajs, ac_trajs):
+        feed = {
+            self.traj_ob : ob_trajs,
+            self.traj_ac : ac_trajs,
+        }
+        sess = tf.get_default_session()
+        embed = sess.run(self.traj2embed, feed_dict=feed)
+        return embed
 
     def act(self, stochastic, ob):
         ac1, vpred1 =  self._act(stochastic, ob)
