@@ -41,17 +41,26 @@ class SysIDPolicy(object):
             obz = tf.clip_by_value(
                 (self.ob - self.ob_rms.mean) / self.ob_rms.std,
                 -5.0, 5.0, name="ob_normalizer")
-            obz, sysidz = tf.split(obz, [dim.ob, dim.sysid], axis=1)
+        obz, sysidz = tf.split(obz, [dim.ob, dim.sysid], axis=1)
+
+        with tf.variable_scope("ob_white"):
+            obz = tf.identity(obz)
+
+        with tf.variable_scope("sysid_white"):
+            sysidz = tf.identity(sysidz)
 
         with tf.variable_scope("embed"):
             self.embed = MLPModule(sysidz, n_hid, hid_size, 0.0, dim.embed, "embed")
 
-        obz_and_embed = tf.concat([obz, self.embed], axis=1, name="input_concat")
+        with tf.variable_scope("input_concat"):
+            obz_and_embed = tf.concat([obz, self.embed], axis=1, name="input_concat")
 
         with tf.variable_scope("policy"):
             mean = MLPModule(obz_and_embed, n_hid, hid_size, 0.01, dim.ac, "pol")
             logstd = tf.get_variable(name="logstd", shape=[1, dim.ac], 
                 initializer=tf.zeros_initializer())
+
+        with tf.variable_scope("policy_to_gaussian"):
             pdparam = U.concatenate([mean, mean * 0.0 + logstd], axis=1)
             self.pdtype = DiagGaussianPdType(dim.ac)
             self.pd = self.pdtype.pdfromflat(pdparam)
@@ -59,16 +68,18 @@ class SysIDPolicy(object):
         with tf.variable_scope("value"):
             self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
 
+        self.traj_ob = U.get_placeholder(name="traj_ob",
+            dtype=tf.float32, shape=[None, dim.window, dim.ob])
+        self.traj_ac = U.get_placeholder(name="traj_ac",
+            dtype=tf.float32, shape=[None, dim.window, dim.ac])
         with tf.variable_scope("sysid"):
             # SysID inputs, network, and loss function
-            self.traj_ob = U.get_placeholder(name="traj_ob",
-                dtype=tf.float32, shape=[None, dim.window, dim.ob])
-            self.traj_ac = U.get_placeholder(name="traj_ac",
-                dtype=tf.float32, shape=[None, dim.window, dim.ac])
             trajs_flat = tf.layers.flatten(tf.concat(
                 [self.traj_ob, self.traj_ac], axis=2))
             self.traj2embed = MLPModule(trajs_flat,
                 n_hid, hid_size, 1.0, dim.embed, "traj2embed")
+
+        with tf.variable_scope("sysid_err_supervised"):
             self.sysid_err_supervised = tf.losses.mean_squared_error(
                 tf.stop_gradient(self.embed), self.traj2embed)
 
