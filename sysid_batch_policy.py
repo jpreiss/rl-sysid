@@ -31,7 +31,7 @@ class SysIDPolicy(object):
         self.traj_len = traj_len
         self.latent_dim = latent_dim
         self.pdtype = pdtype = make_pdtype(ac_space)
-        self.alpha_sysid = 1.0
+        self.alpha_sysid = 0.5
         sequence_length = None
 
         self.ob = U.get_placeholder(name="ob", dtype=tf.float32, shape=[sequence_length] + list(ob_space.shape))
@@ -44,8 +44,8 @@ class SysIDPolicy(object):
 
         obz_and_embed = tf.concat([obz, self.embed], axis=1)
 
-        #self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
-        self.vpred = MLPModule(obz, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+        self.vpred = MLPModule(obz_and_embed, n_hid, hid_size, 1.0, 1, "vf")[:,0]
+        #self.vpred = MLPModule(obz, n_hid, hid_size, 1.0, 1, "vf")[:,0]
 
         mean = MLPModule(obz_and_embed, n_hid, hid_size, 0.01, ac_dim, "pol")
         logstd = tf.get_variable(name="logstd", shape=[1, ac_dim], 
@@ -68,9 +68,9 @@ class SysIDPolicy(object):
         self.state_in = []
         self.state_out = []
 
-        stochastic = tf.placeholder(dtype=tf.bool, shape=())
-        ac = U.switch(stochastic, self.pd.sample(), self.pd.mode())
-        self._act = U.function([stochastic, self.ob], [ac, self.vpred])
+        self.stochastic = tf.placeholder(dtype=tf.bool, shape=())
+        self.ac = U.switch(self.stochastic, self.pd.sample(), self.pd.mode())
+        self._act = U.function([self.stochastic, self.ob], [self.ac, self.vpred])
 
     def sysid_to_embedded(self, sysid_vals):
         sz = sysid_vals.shape
@@ -82,7 +82,11 @@ class SysIDPolicy(object):
         sysid_vals = np.concatenate([np.zeros((k, self.ob_dim)), sysid_vals], axis=1)
         sess = tf.get_default_session()
         embed = sess.run(self.embed, feed_dict={self.ob: sysid_vals})
-        return np.squeeze(embed)
+        if len(sz) < 2:
+            return np.squeeze(embed)
+        else:
+            return embed
+
 
     def estimate_sysid(self, ob_trajs, ac_trajs):
         feed = {
@@ -96,6 +100,16 @@ class SysIDPolicy(object):
     def act(self, stochastic, ob):
         ac1, vpred1 =  self._act(stochastic, ob)
         return ac1, vpred1
+    def act_embed(self, stochastic, ob, embed):
+        feed = {
+            self.ob : ob,
+            self.embed : embed,
+            self.stochastic : stochastic,
+        }
+        sess = tf.get_default_session()
+        ac = sess.run(self.ac, feed_dict=feed)
+        return ac
+
     def get_variables(self):
         return tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.scope)
     def get_trainable_variables(self):
