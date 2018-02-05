@@ -27,10 +27,10 @@ class SysIDPolicy(object):
 
         def MLPModule(last_out, n_hid, hid_size, last_initializer, n_out, name):
                 for i in range(n_hid):
-                    last_out = tf.nn.tanh(U.dense(last_out, hid_size,
-                        name+"fc%i"%(i+1), weight_init=U.normc_initializer(1.0)))
-                return U.dense(last_out, n_out,
-                        name+"final", weight_init=U.normc_initializer(last_initializer))
+                    last_out = tf.nn.relu(tf.layers.dense(last_out, hid_size,
+                        name=name+"fc%i"%(i+1), kernel_initializer=U.normc_initializer(1.0)))
+                return tf.layers.dense(last_out, n_out,
+                        name=name+"final", kernel_initializer=U.normc_initializer(last_initializer))
 
         self.dim = dim
         self.alpha_sysid = 0.5
@@ -61,7 +61,7 @@ class SysIDPolicy(object):
                 initializer=tf.zeros_initializer())
 
         with tf.variable_scope("policy_to_gaussian"):
-            pdparam = U.concatenate([mean, mean * 0.0 + logstd], axis=1)
+            pdparam = tf.concat([mean, mean * 0.0 + logstd], 1)
             self.pdtype = DiagGaussianPdType(dim.ac)
             self.pd = self.pdtype.pdfromflat(pdparam)
 
