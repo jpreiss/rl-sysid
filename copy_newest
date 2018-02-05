@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+
+import argparse
+import glob
+import shutil
+
+parser = argparse.ArgumentParser()
+parser.add_argument("prefix", help="file name prefix to select")
+parser.add_argument("name", help="name to copy")
+args = parser.parse_args()
+
+dst = args.name
+src = sorted(glob.glob(args.prefix + "*"))[-1]
+print("copying", src, "to", dst)
+
+shutil.copy2(src, dst)

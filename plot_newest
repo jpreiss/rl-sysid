@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+
+import argparse
+import glob
+import numpy as np
+import matplotlib.pyplot as plt
+import re
+import sys
+
+# ULTRA HACK to make argparse OK with -n: as an argument value
+unlikely_number = "9217345"
+sys.argv = [s.replace(":", unlikely_number) for s in sys.argv]
+
+parser = argparse.ArgumentParser()
+parser.add_argument("prefix", help="file name prefix to select")
+parser.add_argument("-a", "--age", help="select file by age: 0 == oldest, -1 == newest")
+parser.add_argument("-i", "--index", help="select CSV rows using python array slice syntax")
+parser.add_argument("--exclude", help="exclude rows with given name")
+args = parser.parse_args()
+
+matches = sorted(glob.glob(args.prefix + "*"))
+match_idx = int(args.age) if args.age else -1
+most_recent = matches[match_idx]
+print("loading", most_recent)
+
+begin, end = None, None
+if args.index:
+	# undo ULTRA HACK
+	args.index = args.index.replace(unlikely_number, ":")
+	if ':' not in args.index:
+		raise ValueError('--index string must match python 1D array indexing')
+	ind_val = lambda x: None if x == '' else int(x)
+	begin, end = (ind_val(x) for x in args.index.split(':'))
+
+# TODO figure out now to get names and simple 2d array in one genfromtxt call
+data = np.genfromtxt(most_recent, names=True, delimiter=",", dtype=np.float64)
+names = data.dtype.names
+data = np.genfromtxt(most_recent, skip_header=1, delimiter=",", dtype=np.float64)
+nrows = data.shape[0]
+if (begin and begin >= nrows) or (end and end > nrows):
+	raise IndexError("--index slice out of range (nrows == {})".format(nrows))
+
+xaxis = range(data.shape[0])[begin:end]
+data = data[begin:end,:]
+plt.plot(xaxis, data)
+plt.legend(names)
+plt.show()
