@@ -32,10 +32,22 @@ if args.index:
 	ind_val = lambda x: None if x == '' else int(x)
 	begin, end = (ind_val(x) for x in args.index.split(':'))
 
-# TODO figure out now to get names and simple 2d array in one genfromtxt call
 data = np.genfromtxt(most_recent, names=True, delimiter=",", dtype=np.float64)
-names = data.dtype.names
+names = np.array(data.dtype.names)
+# TODO figure out now to get names and simple 2d array in one genfromtxt call
 data = np.genfromtxt(most_recent, skip_header=1, delimiter=",", dtype=np.float64)
+
+# alphabetize
+ncol = len(names)
+alph = sorted(range(ncol), key = lambda i: names[i].lower())
+names = names[alph]
+
+names_to_remove = ('TimestepsSoFar', 'EpisodesSoFar', 'TimeElapsed')
+cols_to_remove = [np.where(names == n) for n in names_to_remove]
+
+names = np.delete(names, cols_to_remove)
+data = np.delete(data[:,alph], cols_to_remove, axis=1)
+
 nrows = data.shape[0]
 if (begin and begin >= nrows) or (end and end > nrows):
 	raise IndexError("--index slice out of range (nrows == {})".format(nrows))
