@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+data = np.genfromtxt('sysid_scatter.csv')
+nr, nc = data.shape
+assert nc % 2 == 0
+nsys = nc // 2
+for i in range(nsys):
+	actual = data[:,i]
+	estimated = data[:,i+nsys]
+
+	lo, hi = min(actual), max(actual)
+	mid = (lo + hi) / 2
+	delta = hi - mid
+	span = (mid - 2*delta, mid + 2*delta)
+
+	xeqyline = (lo, hi)
+	plt.subplot(nsys, 1, i+1)
+	plt.scatter(actual, estimated)
+	plt.plot(span, span, 'r')
+	plt.axis('equal')
+	plt.xlim(span)
+	plt.ylim(span)
+
+plt.show()
