@@ -1,0 +1,213 @@
+02-05
+-----
+To establish baseline, tested TRPO on Reacher environment.
+With fixed goal, mastered (rew. around -6) in ~150 iterations.
+With moving goal, close after ~200 iterations but not quite mastered.
+
+Next: TRPO, fixed goal, randomized kinematics. Problem is much harder.
+After 200 iterations still is far from converged, often see spinning, etc.
+Seems to plateau at avg reward of around -10 after ~150 iterations.
+Entropy is very low.
+
+Task length makes big difference: accidentally tried fixed goal / random kinematics
+with 128 timesteps - saw total failure, crazy spinning, etc.
+
+Possible: batch mode needed to get experience with different kinematics
+in same TRPO update.
+Or, keep it the same but slowing down learning rate.
+
+Terminated after 440 iterations, still stuck at about same performance as 150 iters.
+
+Created new wrapper that changes kinematics each episode -
+will test hypothesis of line 15.
+--> This worked. Mastered in about 150 iterations with randomization ratio 1.5.
+logged in trpo_kinematic_fixedgoal_1.
+Now trying with ratio of 2.
+Clearly harder but still improving at 120 iters.
+... getting closer at 240, but still avg reward of around -8.5, worse than before...
+... gets around -7.5 by 320 iters. Looks like still improving.
+also possible that longer links are reducing best possible avg reward a little.
+Terminated because doing quite well and want to try moving target w/ 1.5 kimenatic ratio.
+logged in trpo_kinematic_fixedgoal_2.
+
+Trying ratio 1.5 with moving goal.
+Iteration 120, avg reward around -11, roughly same as ratio 2 with fixed goal.
+Iteration 300, avg reward around -9, still strugging.
+Entropy down to -2.4, wondering if stronger entropy regularization is needed.
+500 iterations, reward a little above -8 but learning v slowly. Terminating.
+logged in trpo_kinematic_fixedgoal_3. 
+
+Trying increase in entropy regularization: 0.01 to 0.05.
+Still 1.5 ratio w/ moving goal.
+logged in trpo_kinematic_fixedgoal_4.
+
+Also halving max-KL: 0.01 to 0.005.
+This is with original ent reg of 0.01.
+logged in trpo_kinematic_fixedgoal_5.
+
+Neither working too well -
+increased entropy seems plateaued around -15,
+Decreased KL seems plateaued around -10
+
+High entropy is clearly not working, will terminate. lower KL seems like it might be working.
+
+Realized made a mistake, ratio is 2 instead of 1.5. trying with 1.5
+(entropy and KL both back to default settings)
+logged in trpo_kinematic_fixedgoal_6.
+
+lower KL is definitely learning a reasonabl policy, but not great
+(sometimes gets close but not actually touching target)
+unclear if it would eventually learn perfect policy...
+
+Wondering if short episode length occasionally makes it not worth it
+to expend the control needed to get long arm to target
+(because long arm == more mass == higher control signals needed.)
+Maybe actuator penalty should be normalized by arm mass...
+
+Figure idea:
+w fixed goal, show dramatically different configurations needed to touch -
+emphasizes that policy is almost like ensemble w/switcher
+
+after 770 iterations, ratio2 - slowrate is around avg reward of -7
+but loooking at it execute, it still totally misses some targets
+
+after 350 iterations, ratio1.5 - default is around -7.5
+but quality is also kind of low
+wondering if policy is really not expressive enough?
+
+To try:
+compare RELU,
+deeper network
+wider network
+
+
+02-06
+-----
+trying with ctrl penaltly scaled according to sum(link length)**2.
+Seems to help speed up learning a bit but still has trouble with "hard" configurations
+like tight angles in elbow.
+logged in trpo_kinematic_fixedgoal_7.
+
+trying wider NN.
+logged in trpo_kinematic_fixedgoal_8.
+initial test seemed to get stuck going to center,
+so reduced # of CG iters in TRPO. overwriting log.
+
+
+relu 64, higher ent reg
+180 iters, -13-12 reward
+570 iters, -10 reward, but still slowly getting better
+around -8 at 885 iters. seems good setting but too slow. Increase KL?
+logged in trpo_kinematic_fixedgoal_10.
+Increasing KL in _11.
+
+02-08
+-----
+Talking to Artem. Randomized goal is not really necessary to show our method.
+Will try just using fixed goal w/ random initial position.
+Ultimately, we just need something where SysID info is necessary - this qualifies.
+logged in trpo_kinematic_fixedgoal_12.
+learns really well by 200 iterations with 1.5x joint length range, rew about -5.
+with 2.0x:
+def. harder. Learns pretty good policy by 300 iters, but still inefficient -
+sometimes takes "long way around", burning more ctrl than needed.
+policy's overal "strategy" is unimodal where it should be multimodal.
+will try with higher entropy regularization.
+learns more bimodal policy by 200 iters, reward not better yet though.
+Policy really good by 500 iters. solved.
+logged in trpo_kinematic_fixedgoal_13.
+
+episode length 50->70 in _14.
+strangely makes it much harder, still not even decent policy by 200 iters.
+By 500 iters, rew around -8, policy pretty decent, but seems not helpful
+in getting a policy that's better in the end.
+Will experiment with 50 length for now.
+logged in trpo_kinematic_fixedgoal_14.
+
+now trying goal location fixed along y axis, random y coord only.
+with random initial conditions, this is in a sense equivalent to fully randomized goal
+if you re-orient the coordinate system.
+Takes much longr to learn but looking pretty good around 400 iters.
+Not perfect, totally fails on a few cases but generally gets close.
+logged in trpo_kinematic_fixedgoal_15.
+
+observed that goals very close to shoulder cause problems.
+this is kind of degenerate case because of elbow angle limit.
+making minimum distance a little further to avoid this.
+logged in trpo_kinematic_fixedgoal_16.
+
+also noticed somehow set vf_iters from 1 to 3 in trpo...
+with this change, learns faster, but also entropy decreases faster...
+unsure if will convrege as well...
+... it does.
+
+Implemented true batch TRPO. policy converges in about 100 iters!
+
+
+02-09
+-----
+Tuned sysid_alpha constant, sysid optimization iters, to get decent sysid.
+saw error reduction by factor of about 5 by adding sysid to RL objective,
+but probably need a more thorough comparison to show that it actually helps.
+further reduction of about 2-3x by switching from FC to conv1d architecture.
+started with 2 layers of 16 5xK filters with len-2 max pooling.
+upgrading to 32 filters helped, but only slightly.
+switching to 3xK filters adding extra layer helps by factor of around 2x
+now using (conv 3xK, conv3xK, relu, maxpool, conv 3xK, conv 3xK, relu, FC)
+doesn't help much, just a little.
+probably there's an error floor from once the hand reaches the goal.
+
+Switched to embedding SysID instead of trying to reproduce true values.
+Saw a variance collapse, all values are very close to the mean.
+This makes sense, it allows the SysID network accuracy to be high
+without actually learning anything. NNs always find shortcuts...
+
+
+02-15
+-----
+Added a penalty term to the SysID loss: KL(empirical|Normal(0,1)).
+This effectively forces the embedding space to not collapse.
+Still running experiments to see how well the policy actually learns.
+Seems to be converging to sub optimal too quickly.
+The KL divergence penalty is quite small.
+I think maybe the SysID loss itself is too big - the new normal values
+are much bigger than the link lengths themselves,
+so the SysID squared error is going to be bigger too.
+
+This is worth thinking about.
+The KL penalty means you only need to tune alpha_KL once.
+With raw un-normalized SysID values, you need to tune for every scenario.
+But I think this can be fixed in the raw SysID case by 
+using a running mean/var estimate and making the network
+reproduce the normalized values instead.
+
+Cutting alpha_KL to 1e-2 helps learning, but at 67 iters sysid still bad...
+...policy good by 100 iters but sysid still not great...
+...at 200 iters, sysid around 0.01 - but sqrt(0.01) == 0.1, could be better...
+...trying higher penalty...
+
+02-17
+-----
+Finally was able to get all the different baselines working.
+The SysID network is trained to reconstruct the normalized SysID values.
+Restructured the code, wrote outer loop code to run experiments.
+However, it seems that all policies - even the "blind" policy with no access
+to the link lengths at all - perform well.
+
+02-19
+-----
+Tried a few things to differentiate polcies.
+Entropy rgularization was high - random movement probably caused good SysiD
+performance at test time without trying.
+Experimented with decreased control penalty, but it makes the policies too crazy.
+Cut control penalty by half because found it makes learning faster.
+
+Thinking that if we observe *distance* to the goal instead of vector,
+that might make SysID important enough. But how to justify...
+
+02-22
+-----
+Even if we only observe the distance, ``blind'' still does well!
+At least now, we see clearly better performance for the SysID-capable networks
+when alpha_sysid > 0, but not any better than blind.
+Somehow, this problem is too easy.
