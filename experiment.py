@@ -14,12 +14,14 @@ import baselines.common.batch_util as batch
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
+from reacher_vectorfield import reacher_vectorfield
 
 import csv
 import glob
 import multiprocessing
 import pickle
 import sys
+import time
 from itertools import *
 
 def make_batch_policy_fn(env, flavor, alpha_sysid):
@@ -95,6 +97,26 @@ def test(sess, env_id, flavor, seed, mydir):
 
     return rews
 
+
+def make_vectorfield(sess, env_id, flavor, seed, mydir):
+
+    set_global_seeds(100+seed)
+
+    env = gym.make(env_id)
+    env.seed(100+seed)
+
+    alpha_sysid = 0 # doesn't matter at test time
+    pi = make_batch_policy_fn(env, flavor, alpha_sysid)(
+        "pi", env.observation_space, env.action_space)
+
+    seeddir = os.path.join(mydir, str(seed))
+    ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
+    saver = tf.train.Saver()
+    saver.restore(sess, ckpt_path)
+
+    reacher_vectorfield(env, pi)
+
+
 def train_one_flavor(env_id, flavor, alpha_sysid, seeds, num_timesteps, mydir):
     os.makedirs(mydir, exist_ok=True)
     for seed in seeds:
@@ -114,16 +136,16 @@ def train_one_flavor(env_id, flavor, alpha_sysid, seeds, num_timesteps, mydir):
 def set_xterm_title(title):
     sys.stdout.write("\33]0;" + title + "\a")
 
-def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test_results=False, do_graph=False):
+def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test_results=False, do_graph=False, do_traces=False):
 
     # flavors - defined in policy file, imported
-    alphas = [0, 0.1]
-    #alphas = [0.0]
+    #alphas = [0, 0.1]
+    alphas = [0.1]
     seeds = range(n_runs)
     n_flav = len(flavors)
     n_alph = len(alphas)
 
-    basedir = "./results"
+    basedir = "./results_" + env_id.replace("-", "_")
     def dir_fn(basedir, flavor, alpha):
         return os.path.join(basedir, flavor, "alpha" + str(alpha))
 
@@ -191,6 +213,7 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
         for (flavor, alpha), color in zip(params, color_list):
             rews = stack_seeds(flavor, alpha)
             for seed_rew in rews:
+                seed_rew = np.convolve(seed_rew, np.ones(5), mode="valid")
                 plt.plot(seed_rew, color=color, linewidth=2, 
                     label=str((flavor, alpha)))
         plt.xlabel('iteration')
@@ -199,6 +222,19 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
         plt.show()
 
 
+    if do_traces:
+        n = len(list(product(flavors, alphas)))
+        for i, (flavor, alpha) in enumerate(product(flavors, alphas)):
+            seed = seeds[0]
+            g = tf.Graph()
+            U.flush_placeholders()
+            with tf.Session(graph=g) as sess:
+                mydir = dir_fn(basedir, flavor, alpha)
+                set_xterm_title(mydir)
+                plt.subplot(1,n,i+1)
+                plt.title(mydir)
+                make_vectorfield(sess, env_id, flavor, seed, mydir)
+        plt.show()
 
 
 def boxprint(lines):
@@ -212,13 +248,15 @@ def boxprint(lines):
     print(bar)
 
 def main():
-    num_timesteps = int(32 * 50 * 300 * 5 * 120.0 / 293.0) # lol
+    num_timesteps = 150 * 32 * 200
     n_runs = 1
-    experiment("Reacher-Batch-v1", n_runs, num_timesteps,
-        do_train=False,
-        do_test=False,
-        do_test_results=False,
-        do_graph=True)
+    experiment("PointMass-Batch-v0", n_runs, num_timesteps,
+        do_train        = False,
+        do_test         = False,
+        do_test_results = False,
+        do_graph        = True,
+        do_traces       = False,
+    )
 
 if __name__ == '__main__':
     main()
