@@ -122,7 +122,7 @@ class SysIDPolicy(object):
                 self.sysid_err_supervised = tf.constant(0.0)
             elif flavor == PLAIN:
                 self.sysid_err_supervised = tf.losses.mean_squared_error(
-                    sysidz, self.traj2sysid)
+                    tf.stop_gradient(sysidz), self.traj2sysid)
                 policy_input = tf.concat([obz, self.traj2sysid]) if test else obz_all
             elif flavor == EXTRA:
                 sysid_processor_input = self.traj2sysid if test else sysidz

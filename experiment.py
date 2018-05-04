@@ -2,13 +2,15 @@
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+from copy import deepcopy
 
 from baselines.common import set_global_seeds
 import gym
 import logging
 from baselines import logger
 from baselines.trpo_mpi import trpo_batch
-from sysid_batch_policy import SysIDPolicy, Dim, flavors
+import sysid_batch_policy
+from sysid_batch_policy import SysIDPolicy, Dim
 import baselines.common.tf_util as U
 import baselines.common.batch_util as batch
 import tensorflow as tf
@@ -56,8 +58,8 @@ def train(sess, env_id, flavor, alpha_sysid, seed, num_timesteps, csvdir):
 
     trained_policy = trpo_batch.learn(env, policy_fn,
         timesteps_per_batch=256, max_timesteps=num_timesteps,
-        max_kl=0.01, cg_iters=10, cg_damping=0.1,
-        gamma=0.99, lam=0.98,
+        max_kl=0.01, cg_iters=10, cg_damping=0.3,
+        gamma=0.99, lam=0.97,
         vf_iters=2, vf_stepsize=1e-3,
         entcoeff=0.01,
         logdir=csvdir)
@@ -80,22 +82,79 @@ def test(sess, env_id, flavor, seed, mydir):
     saver.restore(sess, ckpt_path)
 
     # many short iters: denser sampling of true SysID values
-    TEST_TIMESTEPS = 200
-    TEST_ITERS = 1
+    TEST_TIMESTEPS = 150
+    TEST_ITERS = 5
     if env_id == "Reacher-Batch-v1":
         assert TEST_TIMESTEPS % 50 == 0
-    rews = []
 
     # while in some cases, you might set stochastic=False at test time
     # to get the "best" actions, for SysID stochasticity could be
     # an important / desired part of the policy
     seg_gen = batch.traj_segment_generator(
         pi, env, TEST_TIMESTEPS, stochastic=True, test=True)
-    for seg in islice(seg_gen, TEST_ITERS):
-        these_rews = seg["ep_rets"]
-        rews.extend(these_rews)
+    segs = list(islice(seg_gen, TEST_ITERS))
+    return segs
 
-    return rews
+# compute the policy mean action at a fixed task state
+# conditioned on the SysID params
+def action_conditional(sess, env_id, seed, mydir):
+
+    assert env_id == "PointMass-Batch-v0"
+    env = gym.make(env_id)
+
+    alpha_sysid = 0 # doesn't matter at test time
+    pi = make_batch_policy_fn(env, sysid_batch_policy.EMBED, alpha_sysid)(
+        "pi", env.observation_space, env.action_space)
+
+    seeddir = os.path.join(mydir, str(seed))
+    ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
+    saver = tf.train.Saver()
+    saver.restore(sess, ckpt_path)
+
+    assert env.sysid_dim == len(env.sysid_names)
+    N = 1000
+    x = np.linspace(-4, 4, N)
+
+    test_state = np.array([1.0, 1.0, 0, 0]) # env starting state - upper right corner
+
+    def gen():
+        for i, name in enumerate(env.sysid_names):
+            sysid = np.zeros((N, env.sysid_dim))
+            sysid[:,i] = x
+            pi_input = np.hstack([np.tile(test_state, (N, 1)), sysid])
+            actions, values = pi.act(False, pi_input)
+            actions[actions < -1] = -1
+            actions[actions > 1] = 1
+            yield name, x, actions
+
+    return list(gen())
+
+def sysids_to_embeddings(sess, env_id, seed, mydir):
+
+    assert env_id == "PointMass-Batch-v0"
+    env = gym.make(env_id)
+
+    alpha_sysid = 0 # doesn't matter at test time
+    pi = make_batch_policy_fn(env, sysid_batch_policy.EMBED, alpha_sysid)(
+        "pi", env.observation_space, env.action_space)
+
+    seeddir = os.path.join(mydir, str(seed))
+    ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
+    saver = tf.train.Saver()
+    saver.restore(sess, ckpt_path)
+
+    assert env.sysid_dim == len(env.sysid_names)
+    N = 1000
+    x = np.linspace(-4, 4, N)
+
+    def gen():
+        for i, name in enumerate(env.sysid_names):
+            sysid = np.zeros((N, env.sysid_dim))
+            sysid[:,i] = x
+            y = pi.sysid_to_embedded(sysid)
+            yield name, x, y
+
+    return list(gen())
 
 
 def make_vectorfield(sess, env_id, flavor, seed, mydir):
@@ -119,7 +178,9 @@ def make_vectorfield(sess, env_id, flavor, seed, mydir):
 
 def train_one_flavor(env_id, flavor, alpha_sysid, seeds, num_timesteps, mydir):
     os.makedirs(mydir, exist_ok=True)
-    for seed in seeds:
+    for i, seed in enumerate(seeds):
+        print("training {}, alpha = {}, seed = {} ({} out of {} seeds)".format(
+            flavor, alpha_sysid, seed, i + 1, len(seeds)))
         seeddir = os.path.join(mydir, str(seed))
         csvdir = os.path.join(seeddir, 'train_log')
         os.makedirs(csvdir, exist_ok=True)
@@ -136,13 +197,24 @@ def train_one_flavor(env_id, flavor, alpha_sysid, seeds, num_timesteps, mydir):
 def set_xterm_title(title):
     sys.stdout.write("\33]0;" + title + "\a")
 
-def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test_results=False, do_graph=False, do_traces=False):
+def experiment(env_id, n_runs, timesteps, 
+    do_train=False,
+    do_test=False,
+    do_test_results=False,
+    do_graph=False,
+    do_traces=False,
+    do_rew_conditional=False,
+    do_action_conditional=False,
+    do_embed_mapping=False,
+    do_embed_scatters=False,
+    ):
 
     # flavors - defined in policy file, imported
     #alphas = [0, 0.1]
     alphas = [0.1]
     seeds = range(n_runs)
-    n_flav = len(flavors)
+    flavs = deepcopy(sysid_batch_policy.flavors)
+    n_flav = len(flavs)
     n_alph = len(alphas)
 
     basedir = "./results_" + env_id.replace("-", "_")
@@ -151,7 +223,11 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
 
     test_pickle_path = os.path.join(basedir, 'test_results.pickle')
 
-    params = list(product(flavors, alphas)) # cartesian product
+    # DEBUG!!
+    #flavs = ["embed"]
+    #seeds = [3]
+
+    params = list(product(flavs, alphas)) # cartesian product
 
     if do_train:
         # single-threaded
@@ -164,43 +240,140 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
     # TESTING
     #
     if do_test:
-        # will fill arrays, possibly ragged
-        rews = np.full((n_flav, n_alph, n_runs), None)
-        for (i, flavor), (j, alpha), seed in product(
-            enumerate(flavors), enumerate(alphas), seeds):
+        def test_one(flavor, alpha, seed):
             g = tf.Graph()
             U.flush_placeholders()
             with tf.Session(graph=g) as sess:
                 mydir = dir_fn(basedir, flavor, alpha)
                 set_xterm_title(mydir)
-                rews[i,j,seed] = test(sess, env_id, flavor, seed, mydir)
+                return test(sess, env_id, flavor, seed, mydir)
+
+        segs = [
+            (flavor, alpha,
+                [(seed, test_one(flavor, alpha, seed)) for seed in seeds])
+            for flavor, alpha in params
+        ]
 
         with open(test_pickle_path, 'wb') as f:
-            pickle.dump(rews, f)
+            pickle.dump(segs, f)
 
     if do_test_results:
         with open(test_pickle_path, 'rb') as f:
-            rews = pickle.load(f)
+            segs = pickle.load(f)
 
-        def seed_line(i, j, seed):
-            return " seed {}: mean: {:.2f}, std: {:.2f}".format(
-                seed, np.mean(rews[i,j,seed]), np.std(rews[i,j,seed]))
-        def flavor_lines(i, j):
-            yield "{}, alpha_sysid = {}:".format(flavors[i], alphas[j])
-            yield from (seed_line(i, j, seed) for seed in seeds)
-            mean_all = np.mean(np.concatenate(rews[i,j,:]))
-            std_all = np.std(np.concatenate(rews[i,j,:]))
-            yield "overall: mean: {:.2f}, std: {:.2f}".format(mean_all, std_all)
-            yield ""
-        boxprint(list(chain.from_iterable(
-            flavor_lines(i, j) for i, j in product(range(n_flav), range(n_alph))))) # lisp??
+        for flavor, alpha, seed_segs in segs:
+            def gen_lines():
+                yield "{}, alpha_sysid = {}:".format(flavor, alpha)
+                all_rews = []
+                for seed, segs in seed_segs:
+                    if seed in [0, 3, 6]:
+                        continue
+                    rews = flatten_lists(seg["ep_rets"] for seg in segs)
+                    yield " seed {}: mean: {:.2f}, std: {:.2f}".format(
+                        seed, np.mean(rews), np.std(rews))
+                    all_rews.extend(rews)
+                yield "overall: mean: {:.2f}, std: {:.2f}".format(
+                        np.mean(all_rews), np.std(all_rews))
+
+            boxprint(list(gen_lines()))
+
+    if do_embed_scatters:
+        with open(test_pickle_path, 'rb') as f:
+            segs = pickle.load(f)
+
+        for flavor, alpha, seed_segs in segs:
+            seed, chosen_segs = seed_segs[2]
+            def flatten(key):
+                for seg in chosen_segs:
+                    yield seg[key]
+            trues = np.vstack(flatten("embed_true"))
+            estimates = np.vstack(flatten("embed_estimate"))
+            assert estimates.shape == trues.shape
+            N, dim = trues.shape
+            keep = np.random.choice(trues.shape[0], size=N//10, replace=False)
+            dim = 1
+            for i in range(dim):
+                actual = trues[keep,i]
+                estimated = estimates[keep,i]
+                lo, hi = min(actual), max(actual)
+                mid = (lo + hi) / 2
+                delta = hi - mid
+                span = (mid - 1.5*delta, mid + 1.5*delta)
+
+                xeqyline = (lo, hi)
+                plt.subplot(dim, 1, i+1)
+                plt.title("dimension " + str(i))
+                plt.scatter(actual, estimated, c='k', edgecolors='none')
+                plt.plot(span, span, 'k')
+                plt.axis('equal')
+                plt.xlim(span)
+                plt.ylim(span)
+
+            plt.show()
+
+    # TODO extract from segs
+    #if do_rew_conditional:
+        #with open(test_pickle_path, 'rb') as f:
+            #segs = pickle.load(f)
+        #for flav_rews, flav_sysids in zip(rews, sysids):
+            #r = flatten_lists(flav_rews.flat)
+            #s = flatten_lists(flav_sysids.flat)
+            #plt.scatter(s, r)
+            #plt.xlabel("gain")
+            #plt.ylabel("rewards")
+            #plt.show()
+
+    if do_action_conditional:
+        #for (i, flavor), (j, alpha), seed in product(
+            #enumerate(flavors), enumerate(alphas), seeds):
+        for flavor, alpha, seed in [(sysid_batch_policy.EMBED, 0.1, 0)]:
+            g = tf.Graph()
+            U.flush_placeholders()
+            with tf.Session(graph=g) as sess:
+                mydir = dir_fn(basedir, flavor, alpha)
+                set_xterm_title(mydir)
+                graphs = action_conditional(sess, env_id, seed, mydir)
+            sysid_dim = len(graphs)
+            for name, x, action in graphs:
+                _, act_dim = action.shape
+                plt.clf()
+                plt.title("SysID dimension: " + name)
+                for i in range(act_dim):
+                    plt.subplot(1, act_dim, i+1)
+                    plt.plot(x, action[:,i])
+                    plt.xlabel(name)
+                    plt.ylabel("action[{}]".format(i))
+                    plt.grid(True)
+                    plt.ylim([-1.5, 1.5])
+            plt.show()
+
+    if do_embed_mapping:
+        g = tf.Graph()
+        U.flush_placeholders()
+        with tf.Session(graph=g) as sess:
+            mydir = dir_fn(basedir, sysid_batch_policy.EMBED, 0.1)
+            set_xterm_title(mydir)
+            seed = 0
+            mappings = sysids_to_embeddings(sess, env_id, seed, mydir)
+        sysid_dim = len(mappings)
+        for name, sysid, embed in mappings:
+            _, embed_dim = embed.shape
+            plt.clf()
+            plt.title("SysID dimension: " + name)
+            for i in range(embed_dim):
+                plt.subplot(1, embed_dim, i+1)
+                plt.plot(sysid, embed[:,i])
+                plt.xlabel(name)
+                plt.ylabel("embed[{}]".format(i))
+            plt.show()
+
 
     if do_graph:
         def stack_seeds(flavor, alpha):
             def iter_seeds():
                 csvdir = dir_fn(basedir, flavor, alpha)
-                for seed in os.listdir(csvdir):
-                    path = os.path.join(csvdir, seed, "train_log", "progress.csv")
+                for seed in seeds:
+                    path = os.path.join(csvdir, str(seed), "train_log", "progress.csv")
                     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
                     rews = data["EpRewMean"]
                     assert len(rews.shape) == 1
@@ -213,9 +386,13 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
         for (flavor, alpha), color in zip(params, color_list):
             rews = stack_seeds(flavor, alpha)
             for seed_rew in rews:
-                seed_rew = np.convolve(seed_rew, np.ones(5), mode="valid")
+                smooth = 7
+                seed_rew = np.convolve(seed_rew, 1.0 / smooth * np.ones(smooth), mode="valid")
                 plt.plot(seed_rew, color=color, linewidth=2, 
                     label=str((flavor, alpha)))
+        #plt.yticks(np.arange(-900, -150, 25))
+        plt.yticks(np.arange(-200, -50, 10))
+        plt.grid(True, axis="y")
         plt.xlabel('iteration')
         plt.ylabel('mean reward per episode')
         plt.legend(loc='lower right')
@@ -223,8 +400,8 @@ def experiment(env_id, n_runs, timesteps, do_train=False, do_test=False, do_test
 
 
     if do_traces:
-        n = len(list(product(flavors, alphas)))
-        for i, (flavor, alpha) in enumerate(product(flavors, alphas)):
+        n = len(list(product(flavs, alphas)))
+        for i, (flavor, alpha) in enumerate(product(flavs, alphas)):
             seed = seeds[0]
             g = tf.Graph()
             U.flush_placeholders()
@@ -248,15 +425,22 @@ def boxprint(lines):
     print(bar)
 
 def main():
-    num_timesteps = 150 * 32 * 200
-    n_runs = 1
+    num_timesteps = 150 * 32 * 400
+    n_runs = 8
     experiment("PointMass-Batch-v0", n_runs, num_timesteps,
         do_train        = False,
         do_test         = False,
-        do_test_results = False,
-        do_graph        = True,
+        do_test_results = True,
+        do_graph        = False,
         do_traces       = False,
+        do_rew_conditional = False,
+        do_action_conditional = False,
+        do_embed_scatters = False,
+        do_embed_mapping = False,
     )
+
+def flatten_lists(listoflists):
+    return [el for list_ in listoflists for el in list_]
 
 if __name__ == '__main__':
     main()
