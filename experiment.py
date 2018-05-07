@@ -9,12 +9,14 @@ import gym
 import logging
 from baselines import logger
 from baselines.trpo_mpi import trpo_batch
+from baselines.ppo1 import pposgd_batch
 import sysid_batch_policy
 from sysid_batch_policy import SysIDPolicy, Dim
 import baselines.common.tf_util as U
 import baselines.common.batch_util as batch
 import tensorflow as tf
 import numpy as np
+import scipy as sp
 import matplotlib.pyplot as plt
 from reacher_vectorfield import reacher_vectorfield
 
@@ -56,13 +58,26 @@ def train(sess, env_id, flavor, alpha_sysid, seed, num_timesteps, csvdir):
 
     gym.logger.setLevel(logging.WARN)
 
-    trained_policy = trpo_batch.learn(env, policy_fn,
-        timesteps_per_batch=256, max_timesteps=num_timesteps,
-        max_kl=0.01, cg_iters=10, cg_damping=0.3,
-        gamma=0.99, lam=0.97,
-        vf_iters=2, vf_stepsize=1e-3,
-        entcoeff=0.01,
-        logdir=csvdir)
+    algo = "ppo"
+    if algo == "trpo":
+        trained_policy = trpo_batch.learn(env, policy_fn,
+            timesteps_per_batch=150, max_timesteps=num_timesteps,
+            max_kl=0.01, cg_iters=20, cg_damping=0.1,
+            gamma=0.99, lam=0.98,
+            vf_iters=4, vf_stepsize=1e-3,
+            entcoeff=0.01,
+            logdir=csvdir)
+    elif algo == "ppo":
+        trained_policy = pposgd_batch.learn(env, policy_fn,
+            timesteps_per_actorbatch=150,
+            max_iters=80,
+            clip_param=0.2, entcoeff=0.01,
+            optim_epochs=2, optim_stepsize=1e-3, optim_batchsize=512,
+            gamma=0.99, lam=0.98, schedule="constant",
+            logdir=csvdir
+        )
+    else:
+        assert False, "invalid choice of RL algorithm"
     env.close()
 
 def test(sess, env_id, flavor, seed, mydir):
@@ -97,13 +112,14 @@ def test(sess, env_id, flavor, seed, mydir):
 
 # compute the policy mean action at a fixed task state
 # conditioned on the SysID params
-def action_conditional(sess, env_id, seed, mydir):
+def action_conditional(sess, env_id, flavor, seed, mydir):
 
     assert env_id == "PointMass-Batch-v0"
     env = gym.make(env_id)
+    print("action_conditional of:", mydir)
 
     alpha_sysid = 0 # doesn't matter at test time
-    pi = make_batch_policy_fn(env, sysid_batch_policy.EMBED, alpha_sysid)(
+    pi = make_batch_policy_fn(env, flavor, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
     seeddir = os.path.join(mydir, str(seed))
@@ -115,7 +131,7 @@ def action_conditional(sess, env_id, seed, mydir):
     N = 1000
     x = np.linspace(-4, 4, N)
 
-    test_state = np.array([1.0, 1.0, 0, 0]) # env starting state - upper right corner
+    test_state = np.array([0.9, 0.9, 0, 0]) # env starting state - upper right corner
 
     def gen():
         for i, name in enumerate(env.sysid_names):
@@ -181,6 +197,9 @@ def train_one_flavor(env_id, flavor, alpha_sysid, seeds, num_timesteps, mydir):
     for i, seed in enumerate(seeds):
         print("training {}, alpha = {}, seed = {} ({} out of {} seeds)".format(
             flavor, alpha_sysid, seed, i + 1, len(seeds)))
+        status = "{} | alpha = {} | seed {}/{}".format(
+            flavor, alpha_sysid, i + 1, len(seeds))
+        set_xterm_title(status)
         seeddir = os.path.join(mydir, str(seed))
         csvdir = os.path.join(seeddir, 'train_log')
         os.makedirs(csvdir, exist_ok=True)
@@ -210,10 +229,10 @@ def experiment(env_id, n_runs, timesteps,
     ):
 
     # flavors - defined in policy file, imported
-    #alphas = [0, 0.1]
-    alphas = [0.1]
+    alphas = [0.0, 0.1]
+    #alphas = [1.0]
     seeds = range(n_runs)
-    flavs = deepcopy(sysid_batch_policy.flavors)
+    flavs = deepcopy(sysid_batch_policy.flavors)[1:]
     n_flav = len(flavs)
     n_alph = len(alphas)
 
@@ -233,7 +252,6 @@ def experiment(env_id, n_runs, timesteps,
         # single-threaded
         for flavor, alpha in params:
             mydir = dir_fn(basedir, flavor, alpha)
-            set_xterm_title(mydir)
             train_one_flavor(env_id, flavor, alpha, seeds, timesteps, mydir)
 
     #
@@ -261,28 +279,68 @@ def experiment(env_id, n_runs, timesteps,
         with open(test_pickle_path, 'rb') as f:
             segs = pickle.load(f)
 
-        for flavor, alpha, seed_segs in segs:
+        def all_flat_rews(seed_segs):
+            def flat_rews(segs):
+                return flatten_lists(seg["ep_rets"] for seg in segs)
+            return [flat_rews(segs) for seed, segs in seed_segs]
+
+        all_rews = np.array([all_flat_rews(seed_segs) for _, _, seed_segs in segs])
+        assert all_rews.shape[0] == len(flavs) * len(alphas)
+        assert all_rews.shape[1] == len(seeds)
+
+        for (flavor, alpha, seed_segs), rews in zip(segs, all_rews):
             def gen_lines():
                 yield "{}, alpha_sysid = {}:".format(flavor, alpha)
-                all_rews = []
-                for seed, segs in seed_segs:
-                    if seed in [0, 3, 6]:
-                        continue
-                    rews = flatten_lists(seg["ep_rets"] for seg in segs)
+                for (seed, _), r in zip(seed_segs, rews):
                     yield " seed {}: mean: {:.2f}, std: {:.2f}".format(
-                        seed, np.mean(rews), np.std(rews))
-                    all_rews.extend(rews)
+                        seed, np.mean(r), np.std(r))
                 yield "overall: mean: {:.2f}, std: {:.2f}".format(
-                        np.mean(all_rews), np.std(all_rews))
-
+                        np.mean(rews), np.std(rews))
             boxprint(list(gen_lines()))
+
+        # for ANOVA
+        each_trial_rews = np.reshape(all_rews, (all_rews.shape[0], -1))
+        f, p = sp.stats.f_oneway(*each_trial_rews)
+        print("ANOVA each trial results: f = {}, p = {}".format(f, p))
+
+        each_seed_rews = np.mean(all_rews, axis=2)
+        f, p = sp.stats.f_oneway(*each_seed_rews)
+        print("ANOVA individual seed results: f = {}, p = {}".format(f, p))
+
+        # get mean training reward in last k episodes
+        last_k = 2
+        def stack_seeds(flavor, alpha):
+            def iter_seeds():
+                csvdir = dir_fn(basedir, flavor, alpha)
+                for seed in seeds:
+                    path = os.path.join(csvdir, str(seed), "train_log", "progress.csv")
+                    data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
+                    rews = data["EpRewMean"]
+                    yield rews
+            all_rews = np.vstack(iter_seeds())
+            return all_rews
+
+        # make LaTeX table
+        print()
+        print("flavor & $\\alpha$ & training reward mean & test reward mean & test reward std (per-episode) & test reward std (per-seed) \\\\")
+        for (flavor, alpha), pertrial, perseed in zip(
+            product(flavs, alphas), each_trial_rews, each_seed_rews):
+            training_rews = stack_seeds(flavor, alpha)
+            #print(flavor, alpha)
+            #for i, rews in enumerate(training_rews):
+                #print("seed {}: last {} training rews = {}".format(
+                    #i, last_k, np.mean(rews[-last_k:])))
+            training_reward = np.mean(training_rews[:,-last_k:])
+            print("{} & {} & {:.1f} & {:.1f} & {:.1f} & {:.1f} \\\\".format(flavor, alpha,
+                training_reward, np.mean(pertrial), np.std(pertrial), np.std(perseed)))
+
 
     if do_embed_scatters:
         with open(test_pickle_path, 'rb') as f:
             segs = pickle.load(f)
 
         for flavor, alpha, seed_segs in segs:
-            seed, chosen_segs = seed_segs[2]
+            seed, chosen_segs = seed_segs[0]
             def flatten(key):
                 for seg in chosen_segs:
                     yield seg[key]
@@ -295,6 +353,8 @@ def experiment(env_id, n_runs, timesteps,
             for i in range(dim):
                 actual = trues[keep,i]
                 estimated = estimates[keep,i]
+                print("embedding dim {}: mean = {}, std = {}".format(
+                    i, np.mean(actual), np.std(actual)))
                 lo, hi = min(actual), max(actual)
                 mid = (lo + hi) / 2
                 delta = hi - mid
@@ -324,15 +384,13 @@ def experiment(env_id, n_runs, timesteps,
             #plt.show()
 
     if do_action_conditional:
-        #for (i, flavor), (j, alpha), seed in product(
-            #enumerate(flavors), enumerate(alphas), seeds):
-        for flavor, alpha, seed in [(sysid_batch_policy.EMBED, 0.1, 0)]:
+        for flavor, alpha, seed in product(flavs, alphas, seeds):
             g = tf.Graph()
             U.flush_placeholders()
             with tf.Session(graph=g) as sess:
                 mydir = dir_fn(basedir, flavor, alpha)
                 set_xterm_title(mydir)
-                graphs = action_conditional(sess, env_id, seed, mydir)
+                graphs = action_conditional(sess, env_id, flavor, seed, mydir)
             sysid_dim = len(graphs)
             for name, x, action in graphs:
                 _, act_dim = action.shape
@@ -353,7 +411,7 @@ def experiment(env_id, n_runs, timesteps,
         with tf.Session(graph=g) as sess:
             mydir = dir_fn(basedir, sysid_batch_policy.EMBED, 0.1)
             set_xterm_title(mydir)
-            seed = 0
+            seed = 1
             mappings = sysids_to_embeddings(sess, env_id, seed, mydir)
         sysid_dim = len(mappings)
         for name, sysid, embed in mappings:
@@ -377,6 +435,7 @@ def experiment(env_id, n_runs, timesteps,
                     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
                     rews = data["EpRewMean"]
                     assert len(rews.shape) == 1
+                    print("iter seeds shape:", rews.shape)
                     yield rews
             all_rews = np.vstack(iter_seeds())
             return all_rews
@@ -385,6 +444,7 @@ def experiment(env_id, n_runs, timesteps,
         color_list = plt.cm.Set3(np.linspace(0, 1, len(params)))
         for (flavor, alpha), color in zip(params, color_list):
             rews = stack_seeds(flavor, alpha)
+            #rews = rews[1][None,:]
             for seed_rew in rews:
                 smooth = 7
                 seed_rew = np.convolve(seed_rew, 1.0 / smooth * np.ones(smooth), mode="valid")
@@ -425,13 +485,13 @@ def boxprint(lines):
     print(bar)
 
 def main():
-    num_timesteps = 150 * 32 * 400
-    n_runs = 8
+    num_timesteps = 150 * 32 * 300
+    n_runs = 2
     experiment("PointMass-Batch-v0", n_runs, num_timesteps,
         do_train        = False,
         do_test         = False,
         do_test_results = True,
-        do_graph        = False,
+        do_graph        = True,
         do_traces       = False,
         do_rew_conditional = False,
         do_action_conditional = False,
