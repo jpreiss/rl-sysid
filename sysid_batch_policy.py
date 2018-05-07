@@ -92,7 +92,7 @@ class SysIDPolicy(object):
         with tf.variable_scope("ob_white"):
             obz = tf.identity(obz)
         with tf.variable_scope("sysid_white"):
-            sysidz = tf.identity(sysidz)
+            self.sysidz = tf.identity(sysidz)
 
         # trajectory inputs for SysID
         # NOTE: the environment should be defined such that
@@ -141,7 +141,7 @@ class SysIDPolicy(object):
                 dist = tf.distributions.Normal(loc=mean, scale=tf.sqrt(var))
                 std_dist = tf.distributions.Normal(loc=0.0, scale=1.0)
                 embed_KL = tf.reduce_mean(tf.distributions.kl_divergence(dist, std_dist))
-                self.extra_rewards.append(-0.001 * embed_KL)
+                self.extra_rewards.append(-0.1 * embed_KL)
                 self.extra_reward_names.append("neg_embed_KL")
             elif flavor == TRAJ:
                 self.traj_conv = sysid_convnet(trajs, dim.embed)
@@ -154,8 +154,8 @@ class SysIDPolicy(object):
             with tf.variable_scope("policy"):
                 print("policy input dimensionality:", policy_input.get_shape().as_list())
                 mean = MLPModule(policy_input, n_hid, hid_size, 0.01, dim.ac, "pol")
-                logstd = tf.get_variable(name="logstd", shape=[1, dim.ac], 
-                    initializer=tf.constant_initializer(0))
+                logstd = tf.maximum(tf.get_variable(name="logstd", shape=[1, dim.ac], 
+                    initializer=tf.constant_initializer(1.0)), -1.0)
 
             with tf.variable_scope("policy_to_gaussian"):
                 pdparam = tf.concat([mean, mean * 0.0 + logstd], 1)
@@ -164,7 +164,7 @@ class SysIDPolicy(object):
 
         # value function
         with tf.variable_scope("vf"):
-            self.vpred = MLPModule(policy_input, n_hid, hid_size, 0.1, 1, "vf")[:,0]
+            self.vpred = MLPModule(obz_all, n_hid, hid_size, 0.1, 1, "vf")[:,0]
 
         # switch between stochastic and deterministic policy
         with tf.variable_scope("stochastic_switch"):
@@ -185,16 +185,19 @@ class SysIDPolicy(object):
         if self.flavor in [BLIND, TRAJ]:
             # could also just return sysid_vals, but this draws attention to lack of sysid
             return 0 * sysid_vals
-        elif self.flavor == EMBED:
-            # pass val[None,:] if needing to evaluate for just one sysid val
-            assert len(sysid_vals.shape) == 2
-            k = sysid_vals.shape[0]
-            sysid_vals = np.concatenate([np.zeros((k, self.dim.ob)), sysid_vals], axis=1)
-            sess = tf.get_default_session()
+
+        # pass val[None,:] if needing to evaluate for just one sysid val
+        assert len(sysid_vals.shape) == 2
+        k = sysid_vals.shape[0]
+        sysid_vals = np.concatenate([np.zeros((k, self.dim.ob)), sysid_vals], axis=1)
+        sess = tf.get_default_session()
+
+        if self.flavor == EMBED:
             embed = sess.run(self.embed, feed_dict={self.ob: sysid_vals})
             return embed
         else:
-            return sysid_vals
+            sysidz = sess.run(self.sysidz, feed_dict={self.ob: sysid_vals})
+            return sysidz
 
     # given the ob/ac trajectories, estimate the embedding.
     # it's also part of the main policy, but needed on its own for TRPO.
