@@ -19,7 +19,7 @@ import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 from reacher_vectorfield import reacher_vectorfield
-import plots.reward_boxplot
+import plots
 
 import csv
 import glob
@@ -71,7 +71,7 @@ def train(sess, env_id, flavor, alpha_sysid, seed, num_timesteps, csvdir):
     elif algo == "ppo":
         trained_policy = pposgd_batch.learn(env, policy_fn,
             timesteps_per_actorbatch=150,
-            max_iters=80,
+            max_iters=100,
             clip_param=0.2, entcoeff=0.01,
             optim_epochs=2, optim_stepsize=1e-3, optim_batchsize=512,
             gamma=0.99, lam=0.98, schedule="constant",
@@ -233,7 +233,7 @@ def experiment(env_id, n_runs, timesteps,
     alphas = [0.0, 0.1]
     #alphas = [1.0]
     seeds = range(n_runs)
-    flavs = deepcopy(sysid_batch_policy.flavors)[1:]
+    flavs = deepcopy(sysid_batch_policy.flavors)
     n_flav = len(flavs)
     n_alph = len(alphas)
 
@@ -340,7 +340,7 @@ def experiment(env_id, n_runs, timesteps,
             for flavor in flavs
         ])
         test_rews = all_rews.reshape((len(flavs), len(alphas), -1))
-        fig = plots.reward_boxplot.reward_boxplot(flavs, alphas, train_rews, test_rews)
+        fig = plots.reward_boxplot(flavs, alphas, train_rews, test_rews)
         fig.savefig("rewards.pdf")
 
 
@@ -349,37 +349,34 @@ def experiment(env_id, n_runs, timesteps,
         with open(test_pickle_path, 'rb') as f:
             segs = pickle.load(f)
 
-        for flavor, alpha, seed_segs in segs:
-            seed, chosen_segs = seed_segs[0]
+        def get_scatter_data(segs):
             def flatten(key):
-                for seg in chosen_segs:
+                for seg in segs:
                     yield seg[key]
             trues = np.vstack(flatten("embed_true"))
             estimates = np.vstack(flatten("embed_estimate"))
             assert estimates.shape == trues.shape
             N, dim = trues.shape
-            keep = np.random.choice(trues.shape[0], size=N//10, replace=False)
-            dim = 1
-            for i in range(dim):
-                actual = trues[keep,i]
-                estimated = estimates[keep,i]
-                print("embedding dim {}: mean = {}, std = {}".format(
-                    i, np.mean(actual), np.std(actual)))
-                lo, hi = min(actual), max(actual)
-                mid = (lo + hi) / 2
-                delta = hi - mid
-                span = (mid - 1.5*delta, mid + 1.5*delta)
+            trues = trues[::100,:]
+            estimates = estimates[::100,:]
+            if trues.shape[1] > 1:
+                trues = trues[:,0]
+                estimates = estimates[:,0]
+            return trues.flatten(), estimates.flatten()
 
-                xeqyline = (lo, hi)
-                plt.subplot(dim, 1, i+1)
-                plt.title("dimension " + str(i))
-                plt.scatter(actual, estimated, c='k', edgecolors='none')
-                plt.plot(span, span, 'k')
-                plt.axis('equal')
-                plt.xlim(span)
-                plt.ylim(span)
+        def datas(segs):
+            for flavor, alpha, seed_segs in segs:
+                skip_flavors = [sysid_batch_policy.BLIND, sysid_batch_policy.EXTRA]
+                if flavor in skip_flavors or alpha != 0.1:
+                    continue
+                seed, segs = seed_segs[0]
+                ac, emb = get_scatter_data(segs)
+                yield ac, emb, flavor
 
-            plt.show()
+        trues, estimates, flavors = zip(*datas(segs))
+        fig = plots.embed_scatter(np.row_stack(trues), np.row_stack(estimates),
+            list(flavors), ["gain (actual)", "embedding (actual)"])
+        fig.savefig("embed_scatter.pdf")
 
     # TODO extract from segs
     #if do_rew_conditional:
@@ -496,16 +493,16 @@ def boxprint(lines):
 
 def main():
     num_timesteps = 150 * 32 * 300
-    n_runs = 2
+    n_runs = 5
     experiment("PointMass-Batch-v0", n_runs, num_timesteps,
         do_train        = False,
         do_test         = False,
-        do_test_results = True,
+        do_test_results = False,
         do_graph        = False,
         do_traces       = False,
         do_rew_conditional = False,
         do_action_conditional = False,
-        do_embed_scatters = False,
+        do_embed_scatters = True,
         do_embed_mapping = False,
     )
 

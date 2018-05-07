@@ -4,9 +4,6 @@ import matplotlib.gridspec as gridspec
 from matplotlib.ticker import ScalarFormatter
 import itertools
 
-def interleave(a, b):
-	return itertools.chain.from_iterable(zip(a, b))
-
 # grid stuff from https://stackoverflow.com/questions/34933905/matplotlib-adding-subplots-to-a-subplot
 # nested labeling stuff from https://stackoverflow.com/questions/20365122/how-to-make-a-grouped-boxplot-graph-in-matplotlib
 
@@ -39,7 +36,8 @@ def reward_boxplot(flavors, alphas, train_rews, test_rews):
 		for j, alpha in enumerate(alphas):
 			ax = plt.Subplot(fig, inner[j])
 
-			ax.grid(True, axis="y", color="gray", linestyle=":", linewidth=1.0)
+			ax.grid(True, axis="y", color="gray",
+				linewidth=0.75, dashes = (1.0, 3.0))
 			ax.set_axisbelow(True) # move the grid lines behind the box plots
 
 			p = ax.boxplot([train_rews[i,j,:], test_rews[i,j,:]], 
@@ -69,11 +67,13 @@ def reward_boxplot(flavors, alphas, train_rews, test_rews):
 			# add padding space that still has the grid lines in it
 			ax.set_xlim([0.0, 3.0])
 
+			# align y axes, small expansion makes sure grid lines aren't clipped
 			# TODO: handle case where ylim from first isn't valid for rest
 			if ylim is None:
 				ylim = ax.get_ylim()
-			else:
-				ax.set_ylim(ylim)
+				expand = 0.01 * (ylim[1] - ylim[0])
+				ylim = [ylim[0] - expand, ylim[1] + expand]
+			ax.set_ylim(ylim)
 
 			# show y ticks only on the left-most plot
 			if ysrc is not None:
