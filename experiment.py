@@ -19,6 +19,7 @@ import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 from reacher_vectorfield import reacher_vectorfield
+import plots.reward_boxplot
 
 import csv
 import glob
@@ -334,6 +335,15 @@ def experiment(env_id, n_runs, timesteps,
             print("{} & {} & {:.1f} & {:.1f} & {:.1f} & {:.1f} \\\\".format(flavor, alpha,
                 training_reward, np.mean(pertrial), np.std(pertrial), np.std(perseed)))
 
+        train_rews = np.array([
+            [stack_seeds(flavor, alpha)[:,-last_k:].flatten() for alpha in alphas]
+            for flavor in flavs
+        ])
+        test_rews = all_rews.reshape((len(flavs), len(alphas), -1))
+        fig = plots.reward_boxplot.reward_boxplot(flavs, alphas, train_rews, test_rews)
+        fig.savefig("rewards.pdf")
+
+
 
     if do_embed_scatters:
         with open(test_pickle_path, 'rb') as f:
@@ -491,7 +501,7 @@ def main():
         do_train        = False,
         do_test         = False,
         do_test_results = True,
-        do_graph        = True,
+        do_graph        = False,
         do_traces       = False,
         do_rew_conditional = False,
         do_action_conditional = False,
