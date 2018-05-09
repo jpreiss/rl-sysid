@@ -51,6 +51,11 @@
 \newcommand{\cS}{\mathcal{S}}
 \DeclareMathOperator*{\argmax}{argmax}
 
+\newcommand{\blind}{\emph{blind}}
+\newcommand{\plain}{\emph{plain}}
+\newcommand{\extra}{\emph{extra}}
+\newcommand{\embed}{\emph{embed}}
+
 
 \title{Learning an abstract system identification space for adaptive online control}
 
@@ -241,6 +246,7 @@ However, this approach presents two problems.
 First, it requires estimating every system identification parameter,
 even though some may be difficult to estimate or redundant.
 For example, it may be possible to reduce a mass and an acutator force limit into a single dimensionless quantity.
+An example of this issue is shown in \TODO{section ref}.
 Reductions such as these can make the estimation problem easier, but they may not be easy to derive by hand on complex systems.
 
 Second, the behavior that maximizes the expected reward~\eqref{objective}
@@ -257,15 +263,16 @@ The functions $e$ and $id$ are learned simultaneously with the policy $\pi$.
 The latent space creates an opportunity to distill the full complexity of the system identification space $\cS_D$ into a space that is potentially more useful for the policy to produce optimal behavior,
 while simultaneously being easier to estimate.
 
-Although we posit that the latent space can make the system identification task easier,
-its introduction is problematic.
-It becomes possible to learn $e$ and $id$ that both map to the same constant value for any input.
-These functions will achieve perfect performance during training.
+While the latent space may help make the system identification task easier,
+it has a failure mode that must be considered:
+if $e$ and $id$ both map to the same constant value for any input,
+they will achieve perfect performance during training,
+but will not be useful in testing.
 To avoid this problem, we impose a structure where the parameters of the embedding function $e$
 can only be learned via the RL objective, which includes a term rewarding accurate state estimation of $id$:
 \begin{equation}\begin{split}
 \pi^\star &= \argmax_\pi \E_{s_d \in \cS_D} \sum_{t = 0}^H \gamma^t r(s_t, a_t) \\
-&+ \alpha_{id} \E_{\tau \sim \text{\TODO{complicated}}} \| id(\tau) - s_d \|_2 \\
+&+ \alpha_{id} \E_{\tau \sim \text{\TODO{complicated}}} \| id(\tau) - e(s_d) \|_2 \\
 &+ \alpha_{\cH}\cH(\pi) \\
 &+ \alpha_{KL} KL(e(s_d), \cN(0,1))
 \label{objective-full}
@@ -445,6 +452,20 @@ The point-mass learning curves are shown in \TODO{figure}.
 As expected, the \emph{blind} policy performs very poorly.
 The \emph{plain} and \emph{extra} policies perform in between.
 
+
+\begin{table}
+\centering
+\begin{tabular}{l c c c c}
+       &          & test         & reward $\sigma$          & reward $\sigma$       \\
+flavor & $\alpha$ & reward $\mu$ &            (per-episode) &            (per-seed) \\
+\hline
+blind & 0.1 & -80.3 & 27.6 & 2.6 \\
+plain & 0.1 & -70.8 & 28.2 & 2.4 \\
+extra & 0.1 & -67.1 & 34.6 & 2.7 \\
+embed (ours) & 0.1 & \textbf{-62.7} & 27.6 & 0.8 \\
+\end{tabular}
+\end{table}
+
 \begin{figure}
 \centering
 \includegraphics[width=\textwidth]{pointmass_embed_mapping.pdf}
@@ -459,8 +480,8 @@ to the embedding space $\cL$.
 
 \begin{figure}
 \centering
-\includegraphics[width=0.45\textwidth]{pointmass_plain_gain_scatter.pdf}
-\includegraphics[width=0.45\textwidth]{pointmass_embed_scatter.pdf}
+\includegraphics[width=0.85\textwidth]{pointmass_embed_scatter.pdf}
+%\includegraphics[width=0.45\textwidth]{pointmass_embed_scatter.pdf}
 \caption{Scatter plots of actual vs. estimated SysID values.
 \emph{Left:} gain parameter $g$ with ``plain'' policy.
 \emph{Right:} one of two learned embedding dimensions with ``embed'' policy.
@@ -487,6 +508,53 @@ Plots show that policy has learned the optimal bang-bang control policy in both 
 
 Figure~\ref{fig:conditional_action} shows the policy output $\pi(a|s_D)$ conditioned on
 the gain factor $g$ at the initial task state $s_{t0} = (1, 1)$.
+
+\subsubsection{Disentangling of redundant features}
+
+\begin{figure}
+\centering
+\includegraphics[width=0.5\textwidth]{embed_colors.pdf}
+\caption{
+Illustration of learned embedding space that disentangles redundant dynamics parameters.
+Graph axes represent true dynamics parameters; colors represent learned embedding values.
+In point-mass environment with parameters of gain $g$ and mass $m$,
+the dynamics only depend on the $g/m$ ratio.
+The learned embedding reflects this; for example, the $g=m$ line is all mapped to similar embedding values.
+}
+\label{fig:embed_colors}
+\end{figure}
+We construct a version of the point-mass environment with redundant features:
+we add a mass parameter $m$ to the gain parameter $g$.
+Now, the true force applied to the mass is proportional to $g/m$,
+making all $(g, m)$ combinations with the same ratio indistinguishable to the estimation network.
+This poses a problem for the \plain{} or \extra{} frameworks
+because the learning problem of recovering the true $(g, m)$ from a state-action trajectory is ill-posed.
+In Figure~\ref{fig:redundant_fail}, the effe
+
+In contrast, our framework learns an embedding where all $(g, m)$ combinations with similar ratios are mapped to similar embedding values.
+This embedding is visualized in Figure~\ref{fig:embed_colors}
+
+
+\begin{figure}
+\centering
+\includegraphics[width=0.5\textwidth]{embed_colors.pdf}
+\caption{
+Example of incompatibility between our observability objective \TODO{ref}
+and attempting to reconstruct the true dynamics parameters
+in redundant point-mass environment.
+When $\alpha = 0.1$, \extra{} network alters its behavior in pursuit of the observability reward, but the dynamics parameters are impossible to estimate.
+The learning process is disturbed.
+When $\alpha = 0$, \extra{} network does not alter its behavior
+and learns a policy that accounts for the many-to-many characteristic of the estimation problem.
+}
+\label{fig:redundant_fail}
+\end{figure}
+
+
+Note that the learned embedding in these examples is two-dimensional -- 
+the operator does not need to know the minimal dimensionality of the parameters after redundancies are removed.
+This is important in scenarios with many parameters where identifying redundant parameters 
+is not as simple as in the point-mass environment.
 
 \subsection{More Complex Environment}
 \TODO{try a more complex environment}
