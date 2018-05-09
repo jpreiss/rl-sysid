@@ -40,12 +40,12 @@ def make_batch_policy_fn(env, flavor, alpha_sysid):
             sysid = sysid_dim,
             ob_concat = ob_space.shape[0],
             ac = ac_space.shape[0],
-            embed = 2,
+            embed = 8,
             agents = env.N,
             window = 20,
         )
         return SysIDPolicy(name=name, flavor=flavor, dim=dim,
-            hid_size=32, n_hid=2, alpha_sysid=alpha_sysid)
+            hid_size=64, n_hid=2, alpha_sysid=alpha_sysid)
     return f
 
 def train(sess, env_id, flavor, alpha_sysid, seed, num_timesteps, csvdir):
@@ -71,10 +71,10 @@ def train(sess, env_id, flavor, alpha_sysid, seed, num_timesteps, csvdir):
     elif algo == "ppo":
         trained_policy = pposgd_batch.learn(env, policy_fn,
             timesteps_per_actorbatch=150,
-            max_iters=100,
-            clip_param=0.2, entcoeff=0.01,
-            optim_epochs=2, optim_stepsize=1e-3, optim_batchsize=512,
-            gamma=0.99, lam=0.98, schedule="constant",
+            max_iters=500,
+            clip_param=0.2, entcoeff=0.02,
+            optim_epochs=2, optim_stepsize=5e-4, optim_batchsize=512,
+            gamma=0.99, lam=0.97, schedule="constant",
             logdir=csvdir
         )
     else:
@@ -148,8 +148,8 @@ def action_conditional(sess, env_id, flavor, seed, mydir):
 
 def sysids_to_embeddings(sess, env_id, seed, mydir):
 
-    assert env_id == "PointMass-Batch-v0"
     env = gym.make(env_id)
+    assert env.sysid_dim == len(env.sysid_names)
 
     alpha_sysid = 0 # doesn't matter at test time
     pi = make_batch_policy_fn(env, sysid_batch_policy.EMBED, alpha_sysid)(
@@ -160,18 +160,37 @@ def sysids_to_embeddings(sess, env_id, seed, mydir):
     saver = tf.train.Saver()
     saver.restore(sess, ckpt_path)
 
-    assert env.sysid_dim == len(env.sysid_names)
-    N = 1000
-    x = np.linspace(-4, 4, N)
+    if env.sysid_dim == 1:
+        N = 1000
+        x = np.linspace(*env.sysid_ranges[0], num=N)
+        y = pi.sysid_to_embedded(x[:,None])
+        return name, x, y
 
-    def gen():
-        for i, name in enumerate(env.sysid_names):
-            sysid = np.zeros((N, env.sysid_dim))
-            sysid[:,i] = x
-            y = pi.sysid_to_embedded(sysid)
-            yield name, x, y
+    elif env.sysid_dim == 2:
+        N = 256
+        x0, x1 = np.meshgrid(
+            *(np.linspace(r[0], r[1], N) for r in env.sysid_ranges))
+        input = np.concatenate([x0[:,:,None], x1[:,:,None]], axis=2)
+        input = input.reshape((-1, 2))
+        y = pi.sysid_to_embedded(input)
 
-    return list(gen())
+        # sanity checks
+        if False:
+            input = np.tile(np.linspace(0.5, 2, 100)[:,None], (1, 2))
+            y = pi.sysid_to_embedded(input_test)
+            np.set_printoptions(threshold=np.inf)
+            print("test mass = gain:", y)
+
+            input2 = np.column_stack([
+                np.linspace(0.5, 2, 100),
+                np.linspace(2, 0.5, 100)])
+            y = pi.sysid_to_embedded(input2)
+            np.set_printoptions(threshold=np.inf)
+            print("test mass /= gain:", y)
+
+
+        y = y.reshape((N, N, 2))
+        return env.sysid_ranges, env.sysid_names, y
 
 
 def make_vectorfield(sess, env_id, flavor, seed, mydir):
@@ -227,11 +246,12 @@ def experiment(env_id, n_runs, timesteps,
     do_action_conditional=False,
     do_embed_mapping=False,
     do_embed_scatters=False,
+    do_embed_colors=False,
     ):
 
     # flavors - defined in policy file, imported
-    alphas = [0.0, 0.1]
-    #alphas = [1.0]
+    #alphas = [0.0, 0.1]
+    alphas = [0.0, 0.01, 0.03, 0.1]
     seeds = range(n_runs)
     flavs = deepcopy(sysid_batch_policy.flavors)
     n_flav = len(flavs)
@@ -432,6 +452,22 @@ def experiment(env_id, n_runs, timesteps,
                 plt.ylabel("embed[{}]".format(i))
             plt.show()
 
+    if do_embed_colors:
+        g = tf.Graph()
+        U.flush_placeholders()
+        with tf.Session(graph=g) as sess:
+            mydir = dir_fn(basedir, sysid_batch_policy.EMBED, 0.1)
+            set_xterm_title(mydir)
+            seed = 0
+            (xrange, yrange), names, mappings = sysids_to_embeddings(
+                sess, env_id, seed, mydir)
+        #mappings[:,:,0] = mappings[:,:,1]
+        assert len(mappings.shape) == 3
+        assert mappings.shape[2] == 2
+        fig = plots.embed2d_color(mappings, xrange, yrange, names)
+        fig.savefig("embed_colors.pdf")
+        print("saved the figure")
+
 
     if do_graph:
         def stack_seeds(flavor, alpha):
@@ -493,17 +529,18 @@ def boxprint(lines):
 
 def main():
     num_timesteps = 150 * 32 * 300
-    n_runs = 5
-    experiment("PointMass-Batch-v0", n_runs, num_timesteps,
-        do_train        = False,
-        do_test         = False,
-        do_test_results = False,
-        do_graph        = False,
+    n_runs = 3
+    experiment("HalfCheetah-Batch-v1", n_runs, num_timesteps,
+        do_train        = True,
+        do_test         = True,
+        do_test_results = True,
+        do_graph        = True,
         do_traces       = False,
         do_rew_conditional = False,
         do_action_conditional = False,
-        do_embed_scatters = True,
+        do_embed_scatters = False,
         do_embed_mapping = False,
+        do_embed_colors = False,
     )
 
 def flatten_lists(listoflists):
