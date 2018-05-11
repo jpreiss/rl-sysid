@@ -55,6 +55,9 @@
 \newcommand{\plain}{\emph{plain}}
 \newcommand{\extra}{\emph{extra}}
 \newcommand{\embed}{\emph{embed}}
+\newcommand{\traj}{\emph{traj}}
+\newcommand{\embedfn}{e}
+\newcommand{\idfn}{e}
 
 
 \title{Learning an abstract system identification space for adaptive online control}
@@ -319,7 +322,7 @@ Linear   & dim($\cL$)   & -- \\
 
 \begin{figure}
 \centering
-Training Time:
+\textbf{Training Time:}
 
 \vspace{0.4cm}
 \begin{tikzpicture}
@@ -355,7 +358,7 @@ Training Time:
 
 \vspace{0.8cm}
 
-Testing Time:
+\textbf{Testing Time:}
 
 \vspace{0.4cm}
 \begin{tikzpicture}
@@ -409,12 +412,12 @@ and the estimated embeddings are input directly to the policy.
 \begin{algorithm}[h]
 \caption{\TODO{Name our method.}}
 \begin{algorithmic}
-\While{\TODO{condition}}
-  \State sample $s_D^1,\ \dots,\ s_D^N$ uniformly from $\cS_D$
+\While{not converged}
+  \State sample dynamics parameters $s_D^1,\ \dots,\ s_D^N$ uniformly from $\cS_D$
   \State collect rollouts $R$ and task rewards from $\pi$ for each of the $N$ parameters
-  \State use SysID network \TODO{symb} to estimate embedding $\hat e_D$ for sliding $k-$window over $R$
-  \State update $\pi$ using TRPO for total reward $r = r_T + \alpha_{\cH}\cH(\pi) + \alpha_{ID} + \E_{\pi} (\hat e_D - e_D(s_D))^2$
-  \State update SysID network \TODO{symb} using supervised learning
+  \State use SysID network $\idfn$ to estimate embedding $\hat e_D$ for sliding $k-$window over $R$
+  \State update $\pi$ using TRPO for total reward $r = r_T + \alpha_{\cH}\cH(\pi) + \alpha_{ID} \E_{\pi} (\hat e_D - e_D(s_D))^2$
+  \State update SysID network $\idfn$ using supervised learning
 \EndWhile
 \end{algorithmic}
 \end{algorithm}
@@ -423,10 +426,10 @@ and the estimated embeddings are input directly to the policy.
 \section{Experiments}
 In this section, we compare our architecture against several baselines:
 \begin{enumerate}
-\item A policy conditioned on the true system identification parameters $\cS_D$ instead of the learned embedding.
-\item Same as 1, but with an extra fully connected layer between $\cS_D$ and $\pi$, such that the total number of policy parameters is equal to the policy with an embedding network.
-\item A ``blind'' policy that has no access to $\cS_D$ in any form, representing the domain randomization.
-\item A policy where the state-action trajectory is input through a 1D convolutional network (identical to the SysID network) in training, without any condition that this network should estimate $\cS_D$ or an embedding.
+\item \plain: A policy conditioned on the true system identification parameters $\cS_D$ instead of the learned embedding.
+\item \extra: Same as 1, but with an extra fully connected layer between $\cS_D$ and $\pi$, such that the total number of policy parameters is equal to the policy with an embedding network.
+\item \blind: A ``blind'' policy that has no access to $\cS_D$ in any form, representing the domain randomization.
+\item \traj: A policy where the state-action trajectory is input through a 1D convolutional network (identical to the SysID network) in training, without any condition that this network should estimate $\cS_D$ or an embedding.
 \end{enumerate}
 The presented experimental results suggest that our embedding framework learns policies that generalize better than the alternatives \TODO{fingers crossed.}
 
@@ -438,8 +441,9 @@ The system identification space is a gain factor $g \in \pm[0.2, 2]$ \TODO{match
 such that the true force applied to the mass is $g \cdot a$.
 The system dynamics are:
 \begin{equation}\begin{split}
-\dot p = v, \quad \dot v = -\epsilon v + ga, \quad \epsilon \ll 1.
+\dot p = v, \quad \dot v = -\epsilon v + ga
 \end{split}\end{equation}
+where $0 < \epsilon \ll 1$ is a damping parameter.
 The policy is trained to push the mass towards the origin
 by the reward function $r = -\|p\|_1$,
 %by the reward function $r = -\sqrt{|g|} \cdot \|p\|_1$,
@@ -523,21 +527,21 @@ The learned embedding reflects this; for example, the $g=m$ line is all mapped t
 }
 \label{fig:embed_colors}
 \end{figure}
-We construct a version of the point-mass environment with redundant features:
+A primary benefit of our approach is its ability to distill potentially complex sets of dynamics parameters
+into a simplified space where only the minimal information needed to achieve good rewards is preserved.
+We illustrate this by constructing a version of the point-mass environment with redundant features:
 we add a mass parameter $m$ to the gain parameter $g$.
 Now, the true force applied to the mass is proportional to $g/m$,
 making all $(g, m)$ combinations with the same ratio indistinguishable to the estimation network.
 This poses a problem for the \plain{} or \extra{} frameworks
 because the learning problem of recovering the true $(g, m)$ from a state-action trajectory is ill-posed.
-In Figure~\ref{fig:redundant_fail}, the effe
-
 In contrast, our framework learns an embedding where all $(g, m)$ combinations with similar ratios are mapped to similar embedding values.
-This embedding is visualized in Figure~\ref{fig:embed_colors}
+This embedding is visualized in Figure~\ref{fig:embed_colors}.
 
 
 \begin{figure}
 \centering
-\includegraphics[width=0.5\textwidth]{embed_colors.pdf}
+\TODO{learning curves for redundant point-mass.}
 \caption{
 Example of incompatibility between our observability objective \TODO{ref}
 and attempting to reconstruct the true dynamics parameters
