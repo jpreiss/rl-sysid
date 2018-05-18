@@ -49,11 +49,9 @@ def experiment(env_id, n_runs, n_iters,
     alphas = [0.00, 0.01]
     seeds = range(n_runs)
     flavs = deepcopy(sysid_batch_policy.flavors)
-    n_flav = len(flavs)
-    n_alph = len(alphas)
 
     basedir = "./results_" + env_id.replace("-", "_")
-    def dir_fn(basedir, flavor, alpha):
+    def dir_fn(flavor, alpha):
         return os.path.join(basedir, flavor, "alpha" + str(alpha))
 
     test_pickle_path = os.path.join(basedir, 'test_results.pickle')
@@ -87,13 +85,13 @@ def experiment(env_id, n_runs, n_iters,
         multiproc = True
         if multiproc:
             def train_arg_fn(flavor, alpha):
-                mydir = dir_fn(basedir, flavor, alpha)
+                mydir = dir_fn(flavor, alpha)
                 return env_id, flavor, alpha, seeds, n_iters, mydir
             grid(train_one_flavor, train_arg_fn, procs=5)
         else:
             # single-threaded
             for flavor, alpha in params:
-                mydir = dir_fn(basedir, flavor, alpha)
+                mydir = dir_fn(flavor, alpha)
                 train_one_flavor(env_id, flavor, alpha, seeds, n_iters, mydir)
 
     #
@@ -102,7 +100,7 @@ def experiment(env_id, n_runs, n_iters,
     if do_test:
 
         def test_arg_fn(flavor, alpha):
-            mydir = dir_fn(basedir, flavor, alpha)
+            mydir = dir_fn(flavor, alpha)
             return (env_id, flavor, alpha, seeds, mydir)
 
         segs = grid(test_one_flavor, test_arg_fn, procs=6)
@@ -150,7 +148,7 @@ def experiment(env_id, n_runs, n_iters,
         last_k = 5
         def stack_seeds(flavor, alpha):
             def iter_seeds():
-                csvdir = dir_fn(basedir, flavor, alpha)
+                csvdir = dir_fn(flavor, alpha)
                 for seed in seeds:
                     path = os.path.join(csvdir, str(seed), "train_log", "progress.csv")
                     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
@@ -233,7 +231,7 @@ def experiment(env_id, n_runs, n_iters,
             g = tf.Graph()
             U.flush_placeholders()
             with tf.Session(graph=g) as sess:
-                mydir = dir_fn(basedir, flavor, alpha)
+                mydir = dir_fn(flavor, alpha)
                 set_xterm_title(mydir)
                 graphs = action_conditional(sess, env_id, flavor, seed, mydir)
             sysid_dim = len(graphs)
@@ -255,7 +253,7 @@ def experiment(env_id, n_runs, n_iters,
         g = tf.Graph()
         U.flush_placeholders()
         with tf.Session(graph=g) as sess:
-            mydir = dir_fn(basedir, sysid_batch_policy.EMBED, 0.1)
+            mydir = dir_fn(sysid_batch_policy.EMBED, 0.1)
             set_xterm_title(mydir)
             seed = 1
             mappings = sysids_to_embeddings(sess, env_id, seed, mydir)
@@ -276,7 +274,7 @@ def experiment(env_id, n_runs, n_iters,
         g = tf.Graph()
         U.flush_placeholders()
         with tf.Session(graph=g) as sess:
-            mydir = dir_fn(basedir, sysid_batch_policy.EMBED, 0.1)
+            mydir = dir_fn(sysid_batch_policy.EMBED, 0.1)
             set_xterm_title(mydir)
             seed = 0
             (xrange, yrange), names, mappings = sysids_to_embeddings(
@@ -290,7 +288,7 @@ def experiment(env_id, n_runs, n_iters,
 
 
     if do_graph:
-        rews = [load_seed_rews(dir_fn(basedir, flavor, alpha), seeds)
+        rews = [load_seed_rews(dir_fn(flavor, alpha), seeds)
             for flavor, alpha in params]
         fig = plots.learning_curves(*zip(*params), per_seed_rews=rews, mode="std")
         fig.savefig("learning_curves.pdf")
@@ -304,7 +302,7 @@ def experiment(env_id, n_runs, n_iters,
             g = tf.Graph()
             U.flush_placeholders()
             with tf.Session(graph=g) as sess:
-                mydir = dir_fn(basedir, flavor, alpha)
+                mydir = dir_fn(flavor, alpha)
                 set_xterm_title(mydir)
                 plt.subplot(1,n,i+1)
                 plt.title(mydir)
