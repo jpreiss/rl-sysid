@@ -211,3 +211,141 @@ Even if we only observe the distance, ``blind'' still does well!
 At least now, we see clearly better performance for the SysID-capable networks
 when alpha_sysid > 0, but not any better than blind.
 Somehow, this problem is too easy.
+
+
+04-25
+-----
+WTF happened to my life?
+Anyway...
+Constructed pointmass batch environment.
+Verified it's learnable with constant sysid params but initializing the mass anywhere in a box - 
+so the difficulties with radial symmetry we saw before are not too bad here.
+Now randomizing the gain of the control input - *including negative values* !
+I thought this would be a good test case because it should be impossible to make any progress without some kind of SysID.
+However, I was shocked to find that the "blind" policy can still learn to make progress here!
+It is definitely not great, it does a kind of corkscrew towards the goal, and sometimes flies off in the other direction.
+But how is it even getting close to the goal?
+Is it somehow encoding information in the velocity, or the angle above/below the line to the goal?
+
+OK, but the performance here is still not great.
+A policy with access to the gain SysID parameter should get much better rewards.
+
+I first tried with the MLP that simply has access to the true SysID value.
+Surprisingly, this did not do that well.
+I wonder if it is possible that the 2 layer MLP is not capable of assigning such importance to a single weight?
+
+I then switched to the embedding network ("ours").
+It performs very well, much better than either of the previous networks.
+Some kind of code error happened when I made the embedding space 1D, so I switched to 2D.
+That is probably a bug, TODO: figure it out.
+
+I need to figure out why the "PLAIN" network that can see the true value isn't doing better.
+This seems like a bug.
+
+Trying with the "EXTRA" network that gets some additional layers to preprocess the sysid info, but tries to recover the true SysID info instead of recovering the embedding.
+This one also does equally bad as the "PLAIN" network.
+Hmmm... maybe something is happening with the SysID loss?
+If that's the issue, I should be able to set the SysID loss to zero and see the PLAIN network's performance improve.
+
+...yes, it improves to be as good as the EMBED network.
+So there is something messed up about the SysID loss for non-EMBED networks.
+Or (better for us!) the embedding is somehow chosen to make it easier to recover!!
+
+In PLAIN, SysID loss was in the 0.005 - 0.012 range.
+In EMBED, SysID loss was in the 0.05 - 0.1 range.
+This is weird... I was thinking that PLAIN might have a larger SysID loss
+and that was making it do weird behaviors to make the SysID values more observable.
+But it's the opposite.
+More explanation is needed...
+
+Now trying to train PLAIN with 10x larger SysID loss.
+This makes it much worse with crazy behavior.
+There must be a bug in computation of the non-EMBED SysID loss.
+
+
+04-27
+-----
+Was sick yesterday.
+
+Made plots of action conditioned on gain (passing through embedding)
+and saw exactly what we want - higher force for low gain, with a sign change thru zero.
+Strangely, the x and y actions are different.
+Would be interesting to explore same plot at different mass positions.
+
+Tried to find bug in the non-embedding SysID loss, but haven't found one yet.
+Noticed that policies learn to drive the mass to the origin, but then keep wiggling around.
+Is this a learned policy to continue making the SysID variables observable?
+If so, why don't we also see it for the embedding network?
+The embedding network generally does nothing once the mass is at the origin.
+
+Also, I'm still confused as to why the SysID loss is so much lower for the true values
+than for the embedding.
+The SysID network tries to reconstruct the *whitened* SysID variables, and we take the loss after whitening as well.
+So it doesn't matter whether we're using the embedding or not, the SysID error should always be comparing against a unit Gaussian.
+
+Is it possible that the policy has learned to trade off some accuracy of its embedding to gain some performance on the main task reward?
+If so, why cant the non-embedding networks learn to do the same thing?
+
+
+< Early May >
+-------------
+Have achieved main desired results in point-mass environment.
+Most interestingly, we added a redundant (unobservable) parameter,
+so the params are mass and gain, but in the end only gain/mass ratio matters.
+We then show that the learned embedding "disentangles" the unobservable parameters
+such that all combinations with equal mass/gain ratios are mapped to the same embedding value.
+Unfortunatley, we can't then show that this results in improved performance at test time,
+because it seems that the policy just learns to do the right thing despite
+the fact that the SysID network could output many different gain/mass estimates for
+the same observed state/action trajectory.
+
+(TODO: would be cool to generate a bunch of different trajectories for a fixed gain/mass ratio
+and see how the SysID network's output varies.
+Does it just output e.g. mass of 1 no matter what?)
+
+
+< Early-Mid May >
+-----------------
+Having trouble with Half-Cheetah.
+Randomizing link lengths, joint ranges, stiffness, damping, gear ratios.
+Was seeing just not very good rewards even with randomization turned down.
+Noticed that value function is converging very fast but then error starts
+slowly, but steadily increasing.
+This happens after moving from negative rewards (mostly flailing)
+to positive rewards (significant forward progress).
+After VF error starts growing, policy rewards stall or get worse.
+Tried turning down VF learning rate... still not learning that good performance though.
+
+
+May 16
+------
+After a few experiments with baseline TRPO and non-batch enviro,
+found that too-high entcoeff seems to damage learning significantly.
+Entcoeff turned down to 0.01 gives good results with no randomization.
+With ep len of 196, N=64, PPO, ent=0.01, learns avg rew close to 500 after 200 iters.
+This is with blind policy.
+Interestingly, the value function error is quite large (~400).
+Adding in moderate amounts of randomization, will see if it still reaches positive rewards...
+... yes. The learning is a little slower and the variance depending on the SysID sample
+makes the variance of rewards between iters much higher, but it seems a lot better than higher entcoeffs.
+Now doing one more experiment with no randomization,
+testing if higher vf learning rate changes anything...
+... no, is just as bad. Looking back at previous experiment,
+it was doing the same converge quick - diverge a lot behavior.
+But that was already with a 1:1 ratio btw vf and policy learning rates.
+Does this mean we need the vf rate to be *slower*?
+--> also, I still wonder if ADAM is the best choice for the VF.
+The momentum mechanism seems like it could get really screwed up by the non-stationary input distribution.
+... 0.25x learning rate still shows same behavior...
+... 0.05x learning rate, the same thing happens, but in slow motion.
+
+It seems like something more fundamental wrong is happening.
+I'm starting to think that plain SGD would be better for the VF.
+Trying plain SGD - the same phenomenon happens, error grows by a lot once we learn how to get positive rewards.
+Maybe it's just a characteristic of the environment?
+I guess the absolute value of the positive rewards once we learn how to run
+are a lot larger than those of the negative rewards when we're flailing.
+And the vf loss is squared error, so it blows up a lot.
+
+Anyway, since we can learn a good policy in <= 200 iters with either Adam or SGD,
+despite the big vf_loss, I'm going to stop worrying about it for now.

@@ -99,3 +99,9 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# log files
+*.csv
+
+MUJOCO_LOG.TXT
+*.pdf
