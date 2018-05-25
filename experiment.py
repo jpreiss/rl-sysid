@@ -106,13 +106,13 @@ def experiment(env_id, n_runs, n_iters,
         segs = grid(test_one_flavor, test_arg_fn, procs=6)
 
         with open(test_pickle_path, 'wb') as f:
-            pickle.dump(segs, f)
+            pickle.dump(segs, f, protocol=4)
 
 
     if do_test_results:
         print("loading pickle")
         with open(test_pickle_path, 'rb') as f:
-            segs = pickle.load(f)
+            segs = pickle.load(f, encoding="bytes")
 
         def all_flat_rews(seed_segs):
             def flat_rews(segs):
@@ -183,7 +183,7 @@ def experiment(env_id, n_runs, n_iters,
 
     if do_embed_scatters:
         with open(test_pickle_path, 'rb') as f:
-            segs = pickle.load(f)
+            segs = pickle.load(f, encoding="bytes")
 
         def get_scatter_data(segs):
             def flatten(key):
@@ -217,7 +217,7 @@ def experiment(env_id, n_runs, n_iters,
     # TODO extract from segs
     #if do_rew_conditional:
         #with open(test_pickle_path, 'rb') as f:
-            #segs = pickle.load(f)
+            #segs = pickle.load(f, encoding="bytes")
         #for flav_rews, flav_sysids in zip(rews, sysids):
             #r = flatten_lists(flav_rews.flat)
             #s = flatten_lists(flav_sysids.flat)
