@@ -4,6 +4,8 @@ from copy import deepcopy
 from itertools import *
 import os
 import sys
+import collections
+import multiprocessing
 
 import gym
 import logging
@@ -17,14 +19,67 @@ import baselines.common.batch_util2 as batch2
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf
 import numpy as np
+import scipy as sp
 
 
 import sysid_batch_policy
 from sysid_batch_policy import SysIDPolicy, Dim
 
 
-def make_batch_policy_fn(env, flavor, alpha_sysid):
-    embed_dim = 6 # TODO: make parameter
+# JSON schema for fully defining experiments
+spec_prototype = {
+    "env" : "HalfCheetah-Batch-v1",
+    "randomness" : 1.5,
+
+    "flavors" : ["blind", "extra", "embed"],
+    "alphas" : [0.0, 0.01],
+    "seeds" : [0, 1, 2, 3, 4],
+
+    "algorithm" : "ppo",
+    "opt_iters" : 2,
+    "opt_batch" : 256,
+    "learning_rate" : 1e-3,
+    "entropy_coeff" : 0.01,
+    "train_iters" : 300,
+
+    "embed_dim" : 8,
+    "window" : 8,
+
+    "n_hidden" : 2,
+    "hidden_sz" : 32,
+    "activation" : "relu",
+}
+
+
+# convert the experiment spec into a string that's a valid directory name
+# TODO: this is hacky
+def spec_slug(spec):
+    def kvstr(k, v):
+        k_short = "_".join(w[:3] for w in k.split("_"))
+        v_sanitized = str(v).replace(".", "p").replace("-", "_") \
+            .replace(" ", "_").replace(",", "").replace("'", "") \
+            .replace("[", "").replace("]", "")
+        return k_short + "_" + v_sanitized
+    slug = "_".join([kvstr(k, v) for k, v in sorted(spec.items())])
+    return slug
+
+
+# directory for the specific flavor/alpha combination
+def dir_fn(spec, flavor, alpha):
+    return os.path.join("./results", spec_slug(spec), flavor, "alpha" + str(alpha))
+
+# directory for the flavor/alpha/seed combination
+def seed_csv_dir(spec, flavor, alpha, seed):
+    basedir = dir_fn(spec, flavor, alpha)
+    return os.path.join(basedir, str(seed), "train_log")
+
+# TODO make "progress.csv" not hard coded in the training function
+def seed_csv_path(spec, flavor, alpha, seed):
+    return os.path.join(seed_csv_dir(spec, flavor, alpha, seed), "progress.csv")
+
+
+# for compatibility with OpenAI Baselines learning algorithms
+def make_batch_policy_fn(spec, env, flavor, alpha_sysid):
     def f(name, ob_space, ac_space):
         sysid_dim = int(env.sysid_dim)
         for space in (ob_space, ac_space):
@@ -35,29 +90,32 @@ def make_batch_policy_fn(env, flavor, alpha_sysid):
             sysid = sysid_dim,
             ob_concat = ob_space.shape[0],
             ac = ac_space.shape[0],
-            embed = embed_dim,
+            embed = spec["embed_dim"],
             agents = env.N,
-            window = 8,
+            window = spec["window"],
         )
         return SysIDPolicy(name=name, flavor=flavor, dim=dim,
-            hid_size=48, n_hid=2, alpha_sysid=alpha_sysid)
+            hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
+            alpha_sysid=alpha_sysid)
     return f
 
 
-# applies the known good hyperparameters, etc.
-def train(sess, env_id, flavor, alpha_sysid, seed, num_iters, csvdir):
+def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
 
     set_global_seeds(seed)
 
+    env_id = spec["env"]
     env = gym.make(env_id)
     env.seed(seed)
 
-    policy_fn = make_batch_policy_fn(env, flavor, alpha_sysid)
+    policy_fn = make_batch_policy_fn(spec, env, flavor, alpha_sysid)
 
     gym.logger.setLevel(logging.WARN)
 
-    algo = "ppo"
+    algo = spec["algorithm"]
     if algo == "trpo":
+        raise NotImplementedError
+        """
         trained_policy = trpo_batch.learn(env, policy_fn,
             timesteps_per_batch=150, max_iters=num_iters,
             max_kl=0.01, cg_iters=20, cg_damping=0.1,
@@ -65,28 +123,29 @@ def train(sess, env_id, flavor, alpha_sysid, seed, num_iters, csvdir):
             vf_iters=4, vf_stepsize=1e-3,
             entcoeff=0.015,
             logdir=csvdir)
+        """
     elif algo == "ppo":
         trained_policy = pposgd_batch.learn(env, policy_fn,
-            timesteps_per_actorbatch=150,
-            max_iters=num_iters,
-            clip_param=0.2, entcoeff=0.01,
-            optim_epochs=2, optim_stepsize=1e-3, optim_batchsize=256,
+            max_iters=spec["train_iters"],
+            clip_param=0.2, entcoeff=spec["entropy_coeff"],
+            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
+            optim_stepsize=spec["learning_rate"],
             gamma=0.99, lam=0.96, schedule="constant",
             logdir=csvdir
         )
     else:
-        assert False, "invalid choice of RL algorithm"
+        assert False, "invalid choice of RL algorithm: " + algo
     env.close()
 
 
 # load the policy and test, return array of "seg" dictionaries
-def test(sess, env, flavor, seed, mydir):
+def test(spec, sess, env, flavor, seed, mydir):
 
     set_global_seeds(100+seed)
     env.seed(100+seed)
 
     alpha_sysid = 0 # doesn't matter at test time
-    pi = make_batch_policy_fn(env, flavor, alpha_sysid)(
+    pi = make_batch_policy_fn(spec, env, flavor, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
     seeddir = os.path.join(mydir, str(seed))
@@ -104,13 +163,15 @@ def test(sess, env, flavor, seed, mydir):
 
 
 # train the policy, saving the training logs and trained policy
-def train_one_flavor(env_id, flavor, alpha_sysid, seeds, iters, mydir):
+# TODO this function can probably be eliminated
+def train_one_flavor(spec, flavor, alpha_sysid, mydir):
     os.makedirs(mydir, exist_ok=True)
-    for i, seed in enumerate(seeds):
+    n_seeds = len(spec["seeds"])
+    for i, seed in enumerate(spec["seeds"]):
         print("training {}, alpha = {}, seed = {} ({} out of {} seeds)".format(
-            flavor, alpha_sysid, seed, i + 1, len(seeds)))
+            flavor, alpha_sysid, seed, i + 1, n_seeds))
         status = "{} | alpha = {} | seed {}/{}".format(
-            flavor, alpha_sysid, i + 1, len(seeds))
+            flavor, alpha_sysid, i + 1, n_seeds)
         set_xterm_title(status)
         seeddir = os.path.join(mydir, str(seed))
         csvdir = os.path.join(seeddir, 'train_log')
@@ -121,14 +182,15 @@ def train_one_flavor(env_id, flavor, alpha_sysid, seeds, iters, mydir):
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         with tf.Session(graph=g, config=config) as sess:
-            train(sess, env_id, flavor, alpha_sysid, seed, iters, csvdir)
+            train(spec, sess, flavor, alpha_sysid, seed, csvdir)
             ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
             saver = tf.train.Saver()
             saver.save(sess, ckpt_path)
 
 
-def test_one_flavor(env_id, flavor, alpha, seeds, mydir):
-    env = gym.make(env_id)
+def test_one_flavor(spec, flavor, alpha, mydir):
+
+    env = gym.make(spec["env"])
 
     def test_one(flavor, alpha, seed):
         env.seed(100+seed)
@@ -137,22 +199,109 @@ def test_one_flavor(env_id, flavor, alpha, seeds, mydir):
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         with tf.Session(graph=g, config=config) as sess:
-            return test(sess, env, flavor, seed, mydir)
+            return test(spec, sess, env, flavor, seed, mydir)
 
-    return (flavor, alpha,
-        [(seed, test_one(flavor, alpha, seed)) for seed in seeds])
+    return [(seed, test_one(flavor, alpha, seed)) for seed in spec["seeds"]]
 
-# return the reward learning curves for all seeds
-# stacked into a (n_seeds, training_iters) array
-def load_seed_rews(csvdir, seeds):
-    def iter_seeds():
-        for seed in seeds:
-            path = os.path.join(csvdir, str(seed), "train_log", "progress.csv")
-            data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
-            rews = data["EpRewMean"]
-            assert len(rews.shape) == 1
-            yield rews
-    return np.vstack(iter_seeds())
+
+# helper fn for parallelization over flavors * alphas.
+# arg_fn should take (flavor, alpha) and return args for fn(*args).
+# returns list of (flavor, alpha, fn result).
+def grid(spec, fn, arg_fn, n_procs):
+    params = list(product(spec["flavors"], spec["alphas"]))
+    if n_procs == 1:
+        return [fn(*arg_fn(flavor, alpha)) for flavor, alpha in params]
+    else:
+        asyncs = []
+        pool = multiprocessing.Pool(processes=n_procs)
+        for flavor, alpha in params:
+            args = arg_fn(flavor, alpha)
+            res = pool.apply_async(fn, args)
+            asyncs.append(res)
+        results = [(flavor, alpha, res.get()) for (flavor, alpha), res in zip(params, asyncs)]
+        return results
+
+
+def train_all(spec, n_procs):
+    def train_arg_fn(flavor, alpha):
+        mydir = dir_fn(spec, flavor, alpha)
+        return spec, flavor, alpha, mydir
+    grid(spec, train_one_flavor, train_arg_fn, n_procs=n_procs)
+
+
+def test_all(spec, n_procs):
+    def test_arg_fn(flavor, alpha):
+        mydir = dir_fn(spec, flavor, alpha)
+        return spec, flavor, alpha, mydir
+    segs = grid(spec, test_one_flavor, test_arg_fn, n_procs=n_procs)
+    return segs
+
+
+def iter_key(dicts, key):
+    for d in dicts:
+        yield d[key]
+
+def types_str(x):
+    inner = lambda: ", ".join(types_str(y) for y in x)
+    if type(x) == type(()):
+        return "(" + inner() + ")"
+    if type(x) == type([]):
+        return "[" + inner() + "]"
+    return str(type(x))
+
+# TODO explain
+def flat_rewards(segs):
+    def all_flat_rews(seed_segs):
+        return [list(chain(iter_key(segs, "ep_rews"))) for seed, segs in seed_segs]
+    all_rews = np.array([all_flat_rews(seed_segs) for _, _, seed_segs in segs])
+    return all_rews
+
+
+def print_test_results(segs, flat_rews):
+    for (flavor, alpha, seed_segs), rews in zip(segs, flat_rews):
+        def gen_lines():
+            yield "{}, alpha_sysid = {}:".format(flavor, alpha)
+            for (seed, _), r in zip(seed_segs, rews):
+                yield " seed {}: mean: {:.2f}, std: {:.2f}".format(
+                    seed, np.mean(r), np.std(r))
+            yield "overall: mean: {:.2f}, std: {:.2f}".format(
+                    np.mean(rews), np.std(rews))
+        boxprint(list(gen_lines()))
+
+
+def print_anova(flat_rews):
+    # for ANOVA
+    each_trial_rews = np.reshape(flat_rews, (flat_rews.shape[0], -1))
+    f, p = sp.stats.f_oneway(*each_trial_rews)
+    print("ANOVA each trial results: f = {}, p = {}".format(f, p))
+
+    each_seed_rews = np.mean(flat_rews, axis=2).reshape((flat_rews.shape[0], -1))
+    f, p = sp.stats.f_oneway(*each_seed_rews)
+    print("ANOVA individual seed results: f = {}, p = {}".format(f, p))
+
+
+def load_learning_curve(spec, flavor, alpha, seed):
+    path = seed_csv_path(spec, flavor, alpha, seed)
+    data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
+    return data["EpRewMean"]
+
+def load_all_learning_curves(spec, flavor, alpha):
+    return np.array([load_learning_curve(spec, flavor, alpha, seed=s) for s in spec["seeds"]])
+
+
+def embed_scatter_data(segs):
+    trues = np.vstack(iter_key(segs, "embed_true"))
+    estimates = np.vstack(iter_key(segs, "embed_estimate"))
+    assert estimates.shape == trues.shape
+    N, dim = trues.shape
+    trues = trues[::100,:]
+    estimates = estimates[::100,:]
+    if trues.shape[1] > 1:
+        trues = trues[:,0]
+        estimates = estimates[:,0]
+    return trues.flatten(), estimates.flatten()
+
+
 
 # compute the policy mean action at a fixed task state
 # conditioned on the SysID params
@@ -234,10 +383,6 @@ def boxprint(lines):
     for line in lines:
         print(frame(rpad(line), '  | '))
     print(bar)
-
-
-def flatten_lists(listoflists):
-    return [el for list_ in listoflists for el in list_]
 
 
 def set_xterm_title(title):

@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 #   "each" - plot all seeds as individual lines
 #   "std"  - plot mean and one-std bounds over seeds
 def learning_curves(flavors, alphas, per_seed_rews, mode="std"):
-    plt.clf() # TODO specify figure size:
+    fig = plt.figure(figsize=(8,6))
+    plt.clf()
     plt.hold(True)
     color_list = plt.cm.Set3(np.linspace(0, 1, len(list(it.product(flavors)))))
 
@@ -33,9 +34,9 @@ def learning_curves(flavors, alphas, per_seed_rews, mode="std"):
     plt.grid(True, axis="y")
     plt.xlabel('iteration')
     plt.ylabel('reward per episode')
+    plt.ylim([-200,400])
     plt.legend(loc='lower right')
-    return plt.gcf()
-
+    return fig 
 
 if __name__ == "__main__":
     N = 50
