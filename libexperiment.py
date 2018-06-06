@@ -6,6 +6,8 @@ import os
 import sys
 import collections
 import multiprocessing
+import pdb
+import pickle
 
 import gym
 import logging
@@ -29,24 +31,25 @@ from sysid_batch_policy import SysIDPolicy, Dim
 # JSON schema for fully defining experiments
 spec_prototype = {
     "env" : "HalfCheetah-Batch-v1",
-    "randomness" : 1.5,
+    #"randomness" : 1.5, # not yet implemented in mujoco envs
 
-    "flavors" : ["blind", "extra", "embed"],
+    "flavors" : ["blind"],
     "alphas" : [0.0, 0.01],
-    "seeds" : [0, 1, 2, 3, 4],
+    "seeds" : [2],
 
     "algorithm" : "ppo",
     "opt_iters" : 2,
     "opt_batch" : 256,
     "learning_rate" : 1e-3,
-    "entropy_coeff" : 0.01,
+    "lr_schedule" : "linear",
+    "entropy_coeff" : 0.010,
     "train_iters" : 300,
 
     "embed_dim" : 8,
     "window" : 8,
 
     "n_hidden" : 2,
-    "hidden_sz" : 32,
+    "hidden_sz" : 64,
     "activation" : "relu",
 }
 
@@ -79,7 +82,7 @@ def seed_csv_path(spec, flavor, alpha, seed):
 
 
 # for compatibility with OpenAI Baselines learning algorithms
-def make_batch_policy_fn(spec, env, flavor, alpha_sysid):
+def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid):
     def f(name, ob_space, ac_space):
         sysid_dim = int(env.sysid_dim)
         for space in (ob_space, ac_space):
@@ -94,7 +97,7 @@ def make_batch_policy_fn(spec, env, flavor, alpha_sysid):
             agents = env.N,
             window = spec["window"],
         )
-        return SysIDPolicy(name=name, flavor=flavor, dim=dim,
+        return SysIDPolicy(np_random=np_random, name=name, flavor=flavor, dim=dim,
             hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
             alpha_sysid=alpha_sysid)
     return f
@@ -108,44 +111,44 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
     env = gym.make(env_id)
     env.seed(seed)
 
-    policy_fn = make_batch_policy_fn(spec, env, flavor, alpha_sysid)
+    policy_fn = make_batch_policy_fn(env.np_random, spec, env, flavor, alpha_sysid)
 
     gym.logger.setLevel(logging.WARN)
 
     algo = spec["algorithm"]
     if algo == "trpo":
-        raise NotImplementedError
-        """
+        #raise NotImplementedError
         trained_policy = trpo_batch.learn(env, policy_fn,
-            timesteps_per_batch=150, max_iters=num_iters,
-            max_kl=0.01, cg_iters=20, cg_damping=0.1,
+            max_iters=spec["train_iters"],
+            max_kl=0.003, cg_iters=10, cg_damping=0.1,
             gamma=0.99, lam=0.98,
-            vf_iters=4, vf_stepsize=1e-3,
-            entcoeff=0.015,
+            vf_iters=spec["opt_iters"], vf_stepsize=spec["learning_rate"],
+            entcoeff=spec["entropy_coeff"],
             logdir=csvdir)
-        """
     elif algo == "ppo":
-        trained_policy = pposgd_batch.learn(env, policy_fn,
+        trained_policy = pposgd_batch.learn(env.np_random, env, policy_fn,
             max_iters=spec["train_iters"],
             clip_param=0.2, entcoeff=spec["entropy_coeff"],
             optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
             optim_stepsize=spec["learning_rate"],
-            gamma=0.99, lam=0.96, schedule="constant",
+            gamma=0.99, lam=0.96, schedule=spec["lr_schedule"],
             logdir=csvdir
         )
     else:
         assert False, "invalid choice of RL algorithm: " + algo
     env.close()
+    rews = env.mean_rews
+    return rews
 
 
 # load the policy and test, return array of "seg" dictionaries
-def test(spec, sess, env, flavor, seed, mydir):
+def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
 
-    set_global_seeds(100+seed)
-    env.seed(100+seed)
+    set_global_seeds(seed)
+    env.seed(seed)
 
     alpha_sysid = 0 # doesn't matter at test time
-    pi = make_batch_policy_fn(spec, env, flavor, alpha_sysid)(
+    pi = make_batch_policy_fn(env.np_random, spec, env, flavor, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
     seeddir = os.path.join(mydir, str(seed))
@@ -157,8 +160,7 @@ def test(spec, sess, env, flavor, seed, mydir):
     # to get the "best" actions, for SysID stochasticity could be
     # an important / desired part of the policy
     seg_gen = batch2.sysid_simple_generator(pi, env, stochastic=True, test=True)
-    TEST_ITERS = 5
-    segs = list(islice(seg_gen, TEST_ITERS))
+    segs = list(islice(seg_gen, n_sysid_samples))
     return segs
 
 
@@ -182,24 +184,51 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir):
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         with tf.Session(graph=g, config=config) as sess:
-            train(spec, sess, flavor, alpha_sysid, seed, csvdir)
-            ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
+            mean_rews = train(spec, sess, flavor, alpha_sysid, seed, csvdir)
+            ckpt_path = os.path.join(seeddir, "trained_model.ckpt")
+            rews_path = os.path.join(seeddir, "mean_rews.pickle")
+            with open(rews_path, "wb") as f:
+                pickle.dump(mean_rews, f, protocol=4)
             saver = tf.train.Saver()
             saver.save(sess, ckpt_path)
 
 
-def test_one_flavor(spec, flavor, alpha, mydir):
+def render_different_envs(spec, flavor, alpha, seed, mydir):
+
+    env = gym.make(spec["env"])
+    g = tf.Graph()
+    U.flush_placeholders()
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    with tf.Session(graph=g, config=config) as sess:
+        segs = test(spec, sess, env, flavor, seed, mydir)
+
+    rews = np.array([list(chain(iter_key(segs, "ep_rews")))])
+    n_eps, N = rews.shape
+    assert N == env.N
+    mean_rew = np.mean(rews, axis=0)
+    sort_ind = np.argsort(mean_rew)
+
+    for i in range(0, N, N // 5):
+        pass
+    # TODO not implemented yet!!!!
+    # This function is supposed to help visualize the good vs. bad random envs
+
+
+def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 
     env = gym.make(spec["env"])
 
     def test_one(flavor, alpha, seed):
-        env.seed(100+seed)
+        status = "{} | alpha = {} | seed {}/{}".format(
+            flavor, alpha, seed + 1, len(spec["seeds"]))
+        set_xterm_title(status)
         g = tf.Graph()
         U.flush_placeholders()
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         with tf.Session(graph=g, config=config) as sess:
-            return test(spec, sess, env, flavor, seed, mydir)
+            return test(spec, sess, env, flavor, seed, mydir, sysid_iters)
 
     return [(seed, test_one(flavor, alpha, seed)) for seed in spec["seeds"]]
 
@@ -210,7 +239,7 @@ def test_one_flavor(spec, flavor, alpha, mydir):
 def grid(spec, fn, arg_fn, n_procs):
     params = list(product(spec["flavors"], spec["alphas"]))
     if n_procs == 1:
-        return [fn(*arg_fn(flavor, alpha)) for flavor, alpha in params]
+        return [(flavor, alpha, fn(*arg_fn(flavor, alpha))) for flavor, alpha in params]
     else:
         asyncs = []
         pool = multiprocessing.Pool(processes=n_procs)
@@ -230,9 +259,10 @@ def train_all(spec, n_procs):
 
 
 def test_all(spec, n_procs):
+    sysid_iters = 1
     def test_arg_fn(flavor, alpha):
         mydir = dir_fn(spec, flavor, alpha)
-        return spec, flavor, alpha, mydir
+        return spec, flavor, alpha, mydir, sysid_iters
     segs = grid(spec, test_one_flavor, test_arg_fn, n_procs=n_procs)
     return segs
 
@@ -249,7 +279,7 @@ def types_str(x):
         return "[" + inner() + "]"
     return str(type(x))
 
-# TODO explain
+# output shape: (flavor*alpha, seed, iters, N)
 def flat_rewards(segs):
     def all_flat_rews(seed_segs):
         return [list(chain(iter_key(segs, "ep_rews"))) for seed, segs in seed_segs]
@@ -288,6 +318,11 @@ def load_learning_curve(spec, flavor, alpha, seed):
 def load_all_learning_curves(spec, flavor, alpha):
     return np.array([load_learning_curve(spec, flavor, alpha, seed=s) for s in spec["seeds"]])
 
+def load_env_mean_rewards(spec, flavor, alpha, seed):
+    dir = dir_fn(spec, flavor, alpha)
+    path = os.path.join(dir, str(seed), "mean_rews.pickle")
+    with open(path, "rb") as f:
+        return pickle.load(f, encoding="bytes")
 
 def embed_scatter_data(segs):
     trues = np.vstack(iter_key(segs, "embed_true"))
