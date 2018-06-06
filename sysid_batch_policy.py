@@ -15,25 +15,32 @@ from collections import namedtuple
 Dim = namedtuple('Dim', 'ob sysid ob_concat ac embed agents window')
 
 # construct a MLP policy with tanh activation in middle layers
-def MLPModule(last_out, n_hid, hid_size, last_initializer, n_out, name, middle_initializer=1.0):
+def MLPModule(np_random, last_out, n_hid, hid_size, last_initializer, n_out, name, middle_initializer=1.0):
     for i in range(n_hid):
-        last_out = tf.nn.tanh(tf.layers.dense(last_out, hid_size,
-            name=name+"fc%i"%(i+1), kernel_initializer=U.normc_initializer(middle_initializer)))
+        last_out = tf.nn.relu(tf.layers.dense(last_out, hid_size,
+            name=name+"fc%i"%(i+1), kernel_initializer=U.normc_initializer(np_random, middle_initializer)))
     return tf.layers.dense(last_out, n_out,
-            name=name+"final", kernel_initializer=U.normc_initializer(last_initializer))
+            name=name+"final", kernel_initializer=U.normc_initializer(np_random, last_initializer))
 
 # construct the 1D convolutional network for (ob, ac)^k -> SysID
-def sysid_convnet(input, sysid_dim):
-    conv1 = tf.layers.conv1d(input, filters=32, kernel_size=3, activation=None, kernel_initializer=U.normc_initializer(0.1))
-    conv2 = tf.layers.conv1d(conv1, filters=32, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(0.1))
-    pool = tf.layers.max_pooling1d(conv2, pool_size=2, strides=2)
+def sysid_convnet(np_random, input, sysid_dim):
+    window = input.shape[1]
 
-    conv4 = tf.layers.conv1d(pool, filters=32, kernel_size=5, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(0.1))
-    flat = tf.layers.flatten(conv4)
+    if window >= 20: # old
+        conv1 = tf.layers.conv1d(input, filters=32, kernel_size=3, activation=None, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv2 = tf.layers.conv1d(conv1, filters=32, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        pool = tf.layers.max_pooling1d(conv2, pool_size=2, strides=2)
 
-    n_fc = np.prod(flat.shape[1:])
+        conv4 = tf.layers.conv1d(pool, filters=32, kernel_size=5, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        flat = tf.layers.flatten(conv4)
 
-    fc = tf.layers.dense(flat, sysid_dim, kernel_initializer=U.normc_initializer(0.1))
+    else:
+        conv1 = tf.layers.conv1d(input, filters=24, kernel_size=3, activation=None, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv2 = tf.layers.conv1d(conv1, filters=24, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv3 = tf.layers.conv1d(conv2, filters=24, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        flat = tf.layers.flatten(conv3)
+
+    fc = tf.layers.dense(flat, sysid_dim, kernel_initializer=U.normc_initializer(np_random, 0.1))
     return fc
 
 # policy flavors:
@@ -45,7 +52,7 @@ TRAJ  = "traj"  # acces to trajectory history wired directly to policy, no super
 
 # TODO option to make TRPO pass in the trajectory at train time
 # so the TRAJ flavor can work
-flavors = [BLIND, PLAIN, EXTRA, EMBED] #, TRAJ]
+flavors = [BLIND, EXTRA, EMBED] #, TRAJ]
 #flavors = [PLAIN]
 
 flavor_uses_sysid = {
@@ -69,7 +76,7 @@ class SysIDPolicy(object):
     # set up the network
     # NOTE: due to normalization of SysID values and KL-regularization of embedding space,
     # alpha_sysid shouldn't need to vary between environments - but we'll see...
-    def _init(self, flavor, dim, hid_size=32, n_hid=2, alpha_sysid=0.1, test=False):
+    def _init(self, np_random, flavor, dim, hid_size=32, n_hid=2, alpha_sysid=0.1, test=False):
 
         # inputs & hyperparameters
         self.flavor = flavor
@@ -109,11 +116,11 @@ class SysIDPolicy(object):
 
         with tf.variable_scope("sysid"):
             if flavor == PLAIN:
-                self.traj2sysid = sysid_convnet(trajs, dim.sysid)
+                self.traj2sysid = sysid_convnet(np_random, trajs, dim.sysid)
             elif flavor == EXTRA:
-                self.traj2sysid = sysid_convnet(trajs, dim.sysid)
+                self.traj2sysid = sysid_convnet(np_random, trajs, dim.sysid)
             elif flavor == EMBED:
-                self.traj2embed = sysid_convnet(trajs, dim.embed)
+                self.traj2embed = sysid_convnet(np_random, trajs, dim.embed)
 
         # policy
         with tf.variable_scope("pol"):
@@ -126,13 +133,13 @@ class SysIDPolicy(object):
                 policy_input = tf.concat([obz, self.traj2sysid]) if test else obz_all
             elif flavor == EXTRA:
                 sysid_processor_input = self.traj2sysid if test else sysidz
-                sysid_processor = MLPModule(sysid_processor_input, 
+                sysid_processor = MLPModule(np_random, sysid_processor_input, 
                     n_hid, hid_size, 1.0, dim.embed, "sysid_processor")
                 policy_input = tf.concat([obz, sysid_processor], axis=1, name="input_concat")
                 self.sysid_err_supervised = tf.losses.mean_squared_error(
                     tf.stop_gradient(sysidz), self.traj2sysid)
             elif flavor == EMBED:
-                self.embed = MLPModule(sysidz, n_hid, hid_size, 1.0, dim.embed, "embed")#, middle_initializer=0.1)
+                self.embed = MLPModule(np_random, sysidz, n_hid, hid_size, 1.0, dim.embed, "embed")#, middle_initializer=0.1)
                 embed_input = self.traj2embed if test else self.embed
                 policy_input = tf.concat([obz, embed_input], axis=1, name="input_concat")
                 self.sysid_err_supervised = tf.losses.mean_squared_error(
@@ -144,7 +151,7 @@ class SysIDPolicy(object):
                 self.extra_rewards.append(-0.1 * embed_KL)
                 self.extra_reward_names.append("neg_embed_KL")
             elif flavor == TRAJ:
-                self.traj_conv = sysid_convnet(trajs, dim.embed)
+                self.traj_conv = sysid_convnet(np_random, trajs, dim.embed)
                 policy_input = tf.concat([obz, self.traj_conv], axis=1, name="input_concat")
                 self.sysid_err_supervised = tf.constant(0.0)
             else:
@@ -153,9 +160,9 @@ class SysIDPolicy(object):
             # main policy MLP. outputs mean and logstd of stochastic Gaussian policy
             with tf.variable_scope("policy"):
                 print("policy input dimensionality:", policy_input.get_shape().as_list())
-                mean = MLPModule(policy_input, n_hid, hid_size, 0.01, dim.ac, "pol")
+                mean = MLPModule(np_random, policy_input, n_hid, hid_size, 0.01, dim.ac, "pol")
                 logstd = tf.maximum(tf.get_variable(name="logstd", shape=[1, dim.ac], 
-                    initializer=tf.constant_initializer(1.0)), -1.0)
+                    initializer=tf.constant_initializer(-0.3)), -1.0)
 
             with tf.variable_scope("policy_to_gaussian"):
                 pdparam = tf.concat([mean, mean * 0.0 + logstd], 1)
@@ -164,7 +171,7 @@ class SysIDPolicy(object):
 
         # value function
         with tf.variable_scope("vf"):
-            self.vpred = MLPModule(obz_all, n_hid, hid_size, 0.1, 1, "vf")[:,0]
+            self.vpred = MLPModule(np_random, obz_all, n_hid, hid_size, 0.1, 1, "vf")[:,0]
 
         # switch between stochastic and deterministic policy
         with tf.variable_scope("stochastic_switch"):
@@ -202,18 +209,27 @@ class SysIDPolicy(object):
     # given the ob/ac trajectories, estimate the embedding.
     # it's also part of the main policy, but needed on its own for TRPO.
     def estimate_sysid(self, ob_trajs, ac_trajs):
-        feed = {
-            self.ob_traj : ob_trajs,
-            self.ac_traj : ac_trajs,
-        }
         sess = tf.get_default_session()
+        N = ob_trajs.shape[0]
+        k = N // 2048 + 1
+
         if self.flavor in [BLIND, TRAJ]:
-            N = ob_trajs.shape[0]
             return np.zeros((N, self.dim.sysid))
-        elif self.flavor == EMBED:
-            return sess.run(self.traj2embed, feed_dict=feed)
-        else:
-            return sess.run(self.traj2sysid, feed_dict=feed)
+
+        # TODO use tf.data or something to do this automatically!
+        def gen(ob_splits, ac_splits):
+            for o, a in zip(ob_splits, ac_splits):
+                feed = {
+                    self.ob_traj : o,
+                    self.ac_traj : a,
+                }
+                if self.flavor == EMBED:
+                    yield sess.run(self.traj2embed, feed_dict=feed)
+                else:
+                    yield sess.run(self.traj2sysid, feed_dict=feed)
+        est = np.vstack(gen(
+            np.array_split(ob_trajs, k), np.array_split(ac_trajs, k)))
+        return est
 
     # act - ob is concat(ob, sysid)
     def act(self, stochastic, ob):
