@@ -31,11 +31,14 @@ from sysid_batch_policy import SysIDPolicy, Dim
 # JSON schema for fully defining experiments
 spec_prototype = {
     "env" : "HalfCheetah-Batch-v1",
-    #"randomness" : 1.5, # not yet implemented in mujoco envs
+    "n_batch" : 64,
+    "n_total" : 8,
+    "randomness" : 2.0,
+    "test_tweak" : 1.1,
 
-    "flavors" : ["blind"],
-    "alphas" : [0.0, 0.01],
-    "seeds" : [2],
+    "flavors" : ["blind", "extra", "embed"],
+    "alphas" : [0.0, 0.1],
+    "seeds" : [0, 1, 2],
 
     "algorithm" : "ppo",
     "opt_iters" : 2,
@@ -43,15 +46,24 @@ spec_prototype = {
     "learning_rate" : 1e-3,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
-    "train_iters" : 300,
+    "train_iters" : 600,
 
-    "embed_dim" : 8,
-    "window" : 8,
+    "embed_dim" : 4,
+    "window" : 16,
 
-    "n_hidden" : 2,
-    "hidden_sz" : 64,
+    "n_hidden" : 3,
+    "hidden_sz" : 128,
     "activation" : "relu",
 }
+
+def make(spec, **kwargs):
+
+    kwargs = deepcopy(kwargs)
+    for key in ["n_batch", "n_total", "randomness"]:
+        kwargs[key] = spec[key]
+
+    spec = gym.envs.registry.env_specs[spec["env"]]
+    return spec.make(**kwargs)
 
 
 # convert the experiment spec into a string that's a valid directory name
@@ -65,6 +77,20 @@ def spec_slug(spec):
         return k_short + "_" + v_sanitized
     slug = "_".join([kvstr(k, v) for k, v in sorted(spec.items())])
     return slug
+
+class SegArray(object):
+    def __init__(self, segs):
+        self.segs = segs
+
+    def find(self, flavor, alpha, seed=None):
+        for f, a, seed_segs in self.segs:
+            if f == flavor and a == alpha:
+                if seed is None:
+                    return seed_segs
+                else:
+                    for s, segs in seed_segs:
+                        if s == seed:
+                            return seed_segs
 
 
 # directory for the specific flavor/alpha combination
@@ -105,13 +131,14 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid):
 
 def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
 
-    set_global_seeds(seed)
-
     env_id = spec["env"]
-    env = gym.make(env_id)
+    env = make(spec)
     env.seed(seed)
 
-    policy_fn = make_batch_policy_fn(env.np_random, spec, env, flavor, alpha_sysid)
+    var_init_npr = np.random.RandomState(seed)
+    set_global_seeds(seed)
+
+    policy_fn = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid)
 
     gym.logger.setLevel(logging.WARN)
 
@@ -195,7 +222,7 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir):
 
 def render_different_envs(spec, flavor, alpha, seed, mydir):
 
-    env = gym.make(spec["env"])
+    env = make(spec)
     g = tf.Graph()
     U.flush_placeholders()
     config = tf.ConfigProto()
@@ -217,7 +244,7 @@ def render_different_envs(spec, flavor, alpha, seed, mydir):
 
 def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 
-    env = gym.make(spec["env"])
+    env = make(spec, tweak=spec["test_tweak"])
 
     def test_one(flavor, alpha, seed):
         status = "{} | alpha = {} | seed {}/{}".format(
@@ -238,7 +265,7 @@ def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 # returns list of (flavor, alpha, fn result).
 def grid(spec, fn, arg_fn, n_procs):
     params = list(product(spec["flavors"], spec["alphas"]))
-    if n_procs == 1:
+    if n_procs == 1 or len(params) == 1:
         return [(flavor, alpha, fn(*arg_fn(flavor, alpha))) for flavor, alpha in params]
     else:
         asyncs = []
@@ -258,8 +285,7 @@ def train_all(spec, n_procs):
     grid(spec, train_one_flavor, train_arg_fn, n_procs=n_procs)
 
 
-def test_all(spec, n_procs):
-    sysid_iters = 1
+def test_all(spec, sysid_iters, n_procs):
     def test_arg_fn(flavor, alpha):
         mydir = dir_fn(spec, flavor, alpha)
         return spec, flavor, alpha, mydir, sysid_iters
@@ -286,14 +312,19 @@ def flat_rewards(segs):
     all_rews = np.array([all_flat_rews(seed_segs) for _, _, seed_segs in segs])
     return all_rews
 
+def sysid_err(segs):
+    trues = np.vstack(x[None,...] for x in iter_key(segs, "embed_true"))
+    estimates = np.vstack(x[None,...] for x in iter_key(segs, "embed_estimate"))
+    return np.mean((trues[:,None,...] - estimates) ** 2)
 
 def print_test_results(segs, flat_rews):
     for (flavor, alpha, seed_segs), rews in zip(segs, flat_rews):
+        #print("print_test flat_rews for {}, {}: {}".format(flavor, alpha, rews))
         def gen_lines():
             yield "{}, alpha_sysid = {}:".format(flavor, alpha)
-            for (seed, _), r in zip(seed_segs, rews):
-                yield " seed {}: mean: {:.2f}, std: {:.2f}".format(
-                    seed, np.mean(r), np.std(r))
+            for (seed, seed_seg), r in zip(seed_segs, rews):
+                yield " seed {}: mean: {:.2f}, std: {:.2f}, sysid err2: {:.3f}".format(
+                    seed, np.mean(r), np.std(r), sysid_err(seed_seg))
             yield "overall: mean: {:.2f}, std: {:.2f}".format(
                     np.mean(rews), np.std(rews))
         boxprint(list(gen_lines()))
@@ -313,8 +344,13 @@ def print_anova(flat_rews):
 def load_learning_curve(spec, flavor, alpha, seed):
     path = seed_csv_path(spec, flavor, alpha, seed)
     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
-    return data["EpRewMean"]
+    # TODO don't hard-code 64
+    col_names = ["Env{}Rew".format(i) for i in range(64)]
+    rews = np.column_stack([data[c] for c in col_names])
+    return rews
+    #return data["EpRewMean"]
 
+# return has dimensionality (seed, timestep, N)
 def load_all_learning_curves(spec, flavor, alpha):
     return np.array([load_learning_curve(spec, flavor, alpha, seed=s) for s in spec["seeds"]])
 
@@ -325,17 +361,9 @@ def load_env_mean_rewards(spec, flavor, alpha, seed):
         return pickle.load(f, encoding="bytes")
 
 def embed_scatter_data(segs):
-    trues = np.vstack(iter_key(segs, "embed_true"))
-    estimates = np.vstack(iter_key(segs, "embed_estimate"))
-    assert estimates.shape == trues.shape
-    N, dim = trues.shape
-    trues = trues[::100,:]
-    estimates = estimates[::100,:]
-    if trues.shape[1] > 1:
-        trues = trues[:,0]
-        estimates = estimates[:,0]
-    return trues.flatten(), estimates.flatten()
-
+    trues = np.stack(iter_key(segs, "embed_true"))
+    estimates = np.stack(iter_key(segs, "embed_estimate"))
+    return trues, estimates
 
 
 # compute the policy mean action at a fixed task state

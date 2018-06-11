@@ -35,12 +35,14 @@ def sysid_convnet(np_random, input, sysid_dim):
         flat = tf.layers.flatten(conv4)
 
     else:
-        conv1 = tf.layers.conv1d(input, filters=24, kernel_size=3, activation=None, kernel_initializer=U.normc_initializer(np_random, 0.1))
-        conv2 = tf.layers.conv1d(conv1, filters=24, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
-        conv3 = tf.layers.conv1d(conv2, filters=24, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv1 = tf.layers.conv1d(input, filters=64, kernel_size=3, activation=None, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv2 = tf.layers.conv1d(conv1, filters=64, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
+        conv3 = tf.layers.conv1d(conv2, filters=64, kernel_size=3, activation=tf.nn.relu, kernel_initializer=U.normc_initializer(np_random, 0.1))
         flat = tf.layers.flatten(conv3)
+        flat2 = tf.layers.dense(flat, 128, kernel_initializer=U.normc_initializer(np_random, 0.1), activation=tf.nn.relu)
+        #print("convnet flat size:", flat.shape)
 
-    fc = tf.layers.dense(flat, sysid_dim, kernel_initializer=U.normc_initializer(np_random, 0.1))
+    fc = tf.layers.dense(flat2, sysid_dim, kernel_initializer=U.normc_initializer(np_random, 0.1))
     return fc
 
 # policy flavors:
@@ -78,6 +80,8 @@ class SysIDPolicy(object):
     # alpha_sysid shouldn't need to vary between environments - but we'll see...
     def _init(self, np_random, flavor, dim, hid_size=32, n_hid=2, alpha_sysid=0.1, test=False):
 
+        print("obs dim:", dim.ob)
+
         # inputs & hyperparameters
         self.flavor = flavor
         self.dim = dim
@@ -96,6 +100,7 @@ class SysIDPolicy(object):
                 (self.ob - self.ob_rms.mean) / self.ob_rms.std,
                 -5.0, 5.0, name="ob_normalizer")
         obz, sysidz = tf.split(obz_all, [dim.ob, dim.sysid], axis=1)
+        print("obz dim:", obz.shape, "sysidz dim:", sysidz.shape)
         with tf.variable_scope("ob_white"):
             obz = tf.identity(obz)
         with tf.variable_scope("sysid_white"):
@@ -122,6 +127,9 @@ class SysIDPolicy(object):
             elif flavor == EMBED:
                 self.traj2embed = sysid_convnet(np_random, trajs, dim.embed)
 
+        EMBED_N_HID = 2
+        EMBED_HID_SZ = 2 * dim.sysid
+
         # policy
         with tf.variable_scope("pol"):
             if flavor == BLIND:
@@ -133,13 +141,14 @@ class SysIDPolicy(object):
                 policy_input = tf.concat([obz, self.traj2sysid]) if test else obz_all
             elif flavor == EXTRA:
                 sysid_processor_input = self.traj2sysid if test else sysidz
-                sysid_processor = MLPModule(np_random, sysid_processor_input, 
-                    n_hid, hid_size, 1.0, dim.embed, "sysid_processor")
+                sysid_processor = MLPModule(np_random, sysid_processor_input,
+                    EMBED_N_HID, EMBED_HID_SZ, 1.0, dim.embed, "sysid_processor")
                 policy_input = tf.concat([obz, sysid_processor], axis=1, name="input_concat")
                 self.sysid_err_supervised = tf.losses.mean_squared_error(
                     tf.stop_gradient(sysidz), self.traj2sysid)
             elif flavor == EMBED:
-                self.embed = MLPModule(np_random, sysidz, n_hid, hid_size, 1.0, dim.embed, "embed")#, middle_initializer=0.1)
+                self.embed = MLPModule(np_random, sysidz,
+                    EMBED_N_HID, EMBED_HID_SZ, 1.0, dim.embed, "embed")
                 embed_input = self.traj2embed if test else self.embed
                 policy_input = tf.concat([obz, embed_input], axis=1, name="input_concat")
                 self.sysid_err_supervised = tf.losses.mean_squared_error(
