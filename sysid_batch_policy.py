@@ -180,7 +180,8 @@ class SysIDPolicy(object):
 
         # value function
         with tf.variable_scope("vf"):
-            self.vpred = MLPModule(np_random, obz_all, n_hid, hid_size, 0.1, 1, "vf")[:,0]
+            self.vpred = MLPModule(np_random, tf.stop_gradient(policy_input),
+                n_hid, hid_size, 0.1, 1, "vf")[:,0]
 
         # switch between stochastic and deterministic policy
         with tf.variable_scope("stochastic_switch"):

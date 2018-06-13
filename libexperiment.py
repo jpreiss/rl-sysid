@@ -33,12 +33,14 @@ spec_prototype = {
     "env" : "HalfCheetah-Batch-v1",
     "n_batch" : 64,
     "n_total" : 8,
-    "randomness" : 2.0,
+    "randomness" : 1.75,
+
+    "test_mode": "tweak", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
 
     "flavors" : ["blind", "extra", "embed"],
-    "alphas" : [0.0, 0.1],
-    "seeds" : [0, 1, 2],
+    "alphas" : [0.0, 0.01, 0.03, 0.1],
+    "seeds" : [0],
 
     "algorithm" : "ppo",
     "opt_iters" : 2,
@@ -46,9 +48,10 @@ spec_prototype = {
     "learning_rate" : 1e-3,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
-    "train_iters" : 600,
+    "train_iters" : 200,
+    #"tdlambda" : 0.96,
 
-    "embed_dim" : 4,
+    "embed_dim" : 8,
     "window" : 16,
 
     "n_hidden" : 3,
@@ -158,7 +161,9 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
             clip_param=0.2, entcoeff=spec["entropy_coeff"],
             optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
             optim_stepsize=spec["learning_rate"],
-            gamma=0.99, lam=0.96, schedule=spec["lr_schedule"],
+            gamma=0.99, schedule=spec["lr_schedule"],
+            #lam=spec["tdlambda"],
+            lam=0.96,
             logdir=csvdir
         )
     else:
@@ -171,11 +176,14 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
 # load the policy and test, return array of "seg" dictionaries
 def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
 
-    set_global_seeds(seed)
-    env.seed(seed)
+    delta_seed = 100 if spec["test_mode"] == "resample" else 0
+    env.seed(seed + delta_seed)
+
+    var_init_npr = np.random.RandomState(seed + delta_seed)
+    set_global_seeds(seed + delta_seed)
 
     alpha_sysid = 0 # doesn't matter at test time
-    pi = make_batch_policy_fn(env.np_random, spec, env, flavor, alpha_sysid)(
+    pi = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
     seeddir = os.path.join(mydir, str(seed))
@@ -244,7 +252,8 @@ def render_different_envs(spec, flavor, alpha, seed, mydir):
 
 def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 
-    env = make(spec, tweak=spec["test_tweak"])
+    tweak = spec["test_tweak"] if spec["test_mode"] == "tweak" else 0.0
+    env = make(spec, tweak=tweak)
 
     def test_one(flavor, alpha, seed):
         status = "{} | alpha = {} | seed {}/{}".format(
@@ -345,14 +354,14 @@ def load_learning_curve(spec, flavor, alpha, seed):
     path = seed_csv_path(spec, flavor, alpha, seed)
     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
     # TODO don't hard-code 64
-    col_names = ["Env{}Rew".format(i) for i in range(64)]
+    col_names = ["Env{}Rew".format(i) for i in range(32)]
     rews = np.column_stack([data[c] for c in col_names])
     return rews
     #return data["EpRewMean"]
 
 # return has dimensionality (seed, timestep, N)
 def load_all_learning_curves(spec, flavor, alpha):
-    return np.array([load_learning_curve(spec, flavor, alpha, seed=s) for s in spec["seeds"]])
+    return np.stack([load_learning_curve(spec, flavor, alpha, seed=s) for s in spec["seeds"]])
 
 def load_env_mean_rewards(spec, flavor, alpha, seed):
     dir = dir_fn(spec, flavor, alpha)
