@@ -1,0 +1,70 @@
+\begin{tikzpicture}
+\tikzstyle{box}=[draw=black, fill=white, inner sep=2mm, rounded corners=1mm]
+\tikzstyle{bigbox}=[box, minimum height=1.6cm]
+\tikzstyle{branch}=[circle,inner sep=0pt, minimum size=0.15cm, fill=black]
+\tikzstyle{arrow}=[->]
+
+\node[bigbox, align=center] (enviro) {Simulation \\ Environment};
+\node[bigbox, align=center, right=1.75cm of enviro] (policy) {Policy \\ $\pi$};
+\node[box, below=of enviro.south east, xshift=0.3cm] (embedder) {Embedder $\embedfn$};
+\node[box, right=of policy, align=center] (traj)
+{
+  Trajectory $\tau$ \\
+  \begin{tikzpicture}
+  \foreach \offset in {1,...,5}
+  {
+    \node[box, sharp corners] (\offset) at (-0.05 * \offset, 0.1 * \offset) {$s_{t - 1},\ a_{t-1}$};
+  }
+  \end{tikzpicture}
+};
+\node[box, right=of traj] (estimator) {Estimator $\idfn$};
+\node[box, below=0.65cm of traj, align=center] (sup-loss) {Supervised\\ Learning Loss};
+
+\draw [arrow] ([yshift=0.4cm]enviro.east) -- node [above] {states} ([yshift=0.4cm]policy.west);
+\draw [arrow] ([yshift=-0.4cm]policy.west) -- node [below] {actions} ([yshift=-0.4cm]enviro.east);
+\draw [arrow] ([xshift=-0.5cm]enviro.south) |- node [pos=0.25, right] {SysID} (embedder.west);
+\draw [arrow] (embedder.east) -| node [branch, label=below:{embeddings}] (embeds) {} (policy.south);
+\draw [arrow] (traj) -- (estimator);
+\draw [arrow] ([xshift=0.5cm]estimator.south) |- node [pos=0.35, left, align=right] {estimated\\embeddings} (embeds-|sup-loss.east);
+\draw [arrow] (embeds) -- (embeds-|sup-loss.west);
+\end{tikzpicture}
+
+\vspace{0.8cm}
+
+\textbf{Testing Time:}
+
+\vspace{0.4cm}
+\begin{tikzpicture}
+\tikzstyle{box}=[draw=black, fill=white, inner sep=2mm, rounded corners=1mm]
+\tikzstyle{bigbox}=[box, minimum height=1.6cm]
+\tikzstyle{branch}=[circle,inner sep=0pt, minimum size=0.15cm, fill=black]
+\tikzstyle{arrow}=[->]
+
+\node[bigbox, align=center] (enviro) {Test \\ Environment};
+\node[bigbox, align=center, right=1.75cm of enviro] (policy) {Policy \\ $\pi$};
+\node[below=1.2cm of enviro.south east, xshift=-0.75cm, text=red, inner sep=0pt] (embedder) {$\times$};
+\node[box, right=of policy, align=center] (traj)
+{
+  Trajectory $\tau$ \\
+  \begin{tikzpicture}
+  \foreach \offset in {1,...,5}
+  {
+    \node[box, sharp corners] (\offset) at (-0.05 * \offset, 0.1 * \offset) {$s_{t - 1},\ a_{t-1}$};
+  }
+  \end{tikzpicture}
+};
+\node[box, right=of traj] (estimator) {Estimator $\idfn$};
+%\node[below=0.65cm of traj, align=center] (est-embed) {estimated\\ embeddings};
+
+\draw [arrow] ([yshift=0.4cm]enviro.east) -- node [above] {states} ([yshift=0.4cm]policy.west);
+\draw [arrow] ([yshift=-0.4cm]policy.west) -- node [below] {actions} ([yshift=-0.4cm]enviro.east);
+\draw [draw=red, text=red] ([xshift=-0.5cm]enviro.south) |- node [pos=0.25, right] {SysID} (embedder.west);
+%\draw [arrow] (embedder.east) -| node [branch, label=below:{embeddings}] (embeds) {} (policy.south);
+\draw [arrow] (traj) -- (estimator);
+
+%\draw [arrow] ([xshift=0.5cm]estimator.south) |- (est-embed);
+%\draw [arrow] (est-embed) -| (policy.south);
+\draw [arrow, draw=blue, text=blue] ([xshift=0.5cm]estimator.south) |- ++(0,-1.85cm) node [below=0.35cm of traj, align=center]{estimated\\embeddings}  -| (policy.south);
+
+%\draw [arrow] (embeds) -- (embeds-|sup-loss.west);
+\end{tikzpicture}
