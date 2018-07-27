@@ -8,6 +8,7 @@ import collections
 import multiprocessing
 import pdb
 import pickle
+import json
 
 import gym
 import logging
@@ -68,19 +69,6 @@ def make(spec, **kwargs):
     spec = gym.envs.registry.env_specs[spec["env"]]
     return spec.make(**kwargs)
 
-
-# convert the experiment spec into a string that's a valid directory name
-# TODO: this is hacky
-def spec_slug(spec):
-    def kvstr(k, v):
-        k_short = "_".join(w[:3] for w in k.split("_"))
-        v_sanitized = str(v).replace(".", "p").replace("-", "_") \
-            .replace(" ", "_").replace(",", "").replace("'", "") \
-            .replace("[", "").replace("]", "")
-        return k_short + "_" + v_sanitized
-    slug = "_".join([kvstr(k, v) for k, v in sorted(spec.items())])
-    return slug
-
 class SegArray(object):
     def __init__(self, segs):
         self.segs = segs
@@ -95,10 +83,26 @@ class SegArray(object):
                         if s == seed:
                             return seed_segs
 
+# directory for the whole experiment
+def find_spec_dir(spec):
+    spec_hash = hash(json.dumps(spec, sort_keys=True)) % (1 << 32)
+    d = os.path.join("./results", str(spec_hash))
+    spec_path = os.path.join(d, "config.json")
+    if os.path.exists(spec_path):
+        with open(spec_path) as f:
+            dirspec = json.load(f)
+            if dirspec != spec:
+                raise ValueError("Hash collision!!")
+    else:
+        os.makedirs(d)
+        with open(spec_path, "w") as f:
+            json.dump(spec, f)
+    return d
 
 # directory for the specific flavor/alpha combination
 def dir_fn(spec, flavor, alpha):
-    return os.path.join("./results", spec_slug(spec), flavor, "alpha" + str(alpha))
+    d = find_spec_dir(spec)
+    return os.path.join(d, flavor, "alpha" + str(alpha))
 
 # directory for the flavor/alpha/seed combination
 def seed_csv_dir(spec, flavor, alpha, seed):
