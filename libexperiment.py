@@ -16,25 +16,29 @@ import logging
 from baselines.common import set_global_seeds
 from baselines.trpo_mpi import trpo_batch
 from baselines.ppo1 import pposgd_batch
+from baselines.qtopt import qtopt_sysid
 import baselines.common.tf_util as U
 import baselines.common.batch_util2 as batch2
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf
+from tensorflow.python.client import device_lib
 import numpy as np
 import scipy as sp
 
 
 import sysid_batch_policy
 from sysid_batch_policy import SysIDPolicy, Dim
+from sysid_batch_Q import SysIDQ
 
 
 # JSON schema for fully defining experiments
 spec_prototype = {
-    "env" : "HalfCheetah-Batch-v1",
+    #"env" : "HalfCheetah-Batch-v1",
+    "env" : "CartPole-SysID-Batch-v0",
     "n_batch" : 64,
-    "n_total" : 8,
-    "randomness" : 1.75,
+    "n_total" : 256,
+    "randomness" : 1.0,
 
     "test_mode": "tweak", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
@@ -43,20 +47,20 @@ spec_prototype = {
     "alphas" : [0.0, 0.01, 0.03, 0.1],
     "seeds" : [0],
 
-    "algorithm" : "ppo",
-    "opt_iters" : 2,
+    "algorithm" : "qtopt",
+    "opt_iters" : 20,
     "opt_batch" : 256,
-    "learning_rate" : 1e-3,
+    "learning_rate" : 1e-2,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
-    "train_iters" : 200,
+    "train_iters" : 2000,
     #"tdlambda" : 0.96,
 
     "embed_dim" : 8,
     "window" : 16,
 
-    "n_hidden" : 3,
-    "hidden_sz" : 128,
+    "n_hidden" : 2,
+    "hidden_sz" : 32,
     "activation" : "relu",
 }
 
@@ -130,9 +134,14 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid):
             agents = env.N,
             window = spec["window"],
         )
-        return SysIDPolicy(np_random=np_random, name=name, flavor=flavor, dim=dim,
-            hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
-            alpha_sysid=alpha_sysid)
+        if spec["algorithm"] in ["qtopt"]:
+            return SysIDQ(name=name, flavor=flavor, dim=dim,
+                hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
+                alpha_sysid=alpha_sysid)
+        else:
+            return SysIDPolicy(np_random=np_random, name=name, flavor=flavor, dim=dim,
+                hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
+                alpha_sysid=alpha_sysid)
     return f
 
 
@@ -168,6 +177,16 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
             gamma=0.99, schedule=spec["lr_schedule"],
             #lam=spec["tdlambda"],
             lam=0.96,
+            logdir=csvdir
+        )
+    elif algo == "qtopt":
+        trained_policy = qtopt_sysid.learn(env.np_random, env, policy_fn,
+            learning_rate=spec["learning_rate"],
+            target_update_iters=4,
+            max_iters=spec["train_iters"],
+            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
+            td_lambda=0.9,
+            schedule=spec["lr_schedule"],
             logdir=csvdir
         )
     else:
@@ -207,6 +226,7 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
 # TODO this function can probably be eliminated
 def train_one_flavor(spec, flavor, alpha_sysid, mydir):
     os.makedirs(mydir, exist_ok=True)
+    #os.environ["CUDA_VISIBLE_DEVICES"] = ""
     n_seeds = len(spec["seeds"])
     for i, seed in enumerate(spec["seeds"]):
         print("training {}, alpha = {}, seed = {} ({} out of {} seeds)".format(
@@ -218,10 +238,13 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir):
         csvdir = os.path.join(seeddir, 'train_log')
         os.makedirs(csvdir, exist_ok=True)
 
+        dev = tf.device("/device:CPU:0")
+        dev.__enter__()
         g = tf.Graph()
         U.flush_placeholders() # TODO get rid of U
         config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
+        # config.gpu_options.allow_growth = True
+        print(config)
         with tf.Session(graph=g, config=config) as sess:
             mean_rews = train(spec, sess, flavor, alpha_sysid, seed, csvdir)
             ckpt_path = os.path.join(seeddir, "trained_model.ckpt")
@@ -357,8 +380,7 @@ def print_anova(flat_rews):
 def load_learning_curve(spec, flavor, alpha, seed):
     path = seed_csv_path(spec, flavor, alpha, seed)
     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
-    # TODO don't hard-code 64
-    col_names = ["Env{}Rew".format(i) for i in range(32)]
+    col_names = ["Env{}Rew".format(i) for i in range(spec["n_batch"])]
     rews = np.column_stack([data[c] for c in col_names])
     return rews
     #return data["EpRewMean"]
