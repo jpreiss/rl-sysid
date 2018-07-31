@@ -5,7 +5,7 @@
 % before loading nips_2018
 
 % ready for submission
-\usepackage[final]{corl_2018}
+\usepackage[]{corl_2018}
 
 % to compile a preprint version, e.g., for submission to arXiv, add
 % add the [preprint] option:
@@ -27,10 +27,12 @@
 \usepackage{amssymb}       % blackboard math symbols
 \usepackage{nicefrac}       % compact symbols for 1/2, etc.
 \usepackage{microtype}      % microtypography
-\usepackage{color}
+\usepackage{xcolor}
 \usepackage{natbib}
 \usepackage{algpseudocode,algorithm,algorithmicx}
 \usepackage{comment}
+%\usepackage{subfigure}
+\usepackage{subcaption}
 
 \usepackage{graphicx}
 \graphicspath{{figures/}}
@@ -57,7 +59,7 @@
 \newcommand{\blind}{\emph{blind}}
 \newcommand{\plain}{\emph{plain}}
 \newcommand{\extra}{\emph{extra}}
-\newcommand{\embed}{\emph{embed}}
+\newcommand{\embed}{\emph{E2ID}}
 \newcommand{\traj}{\emph{traj}}
 \newcommand{\embedfn}{e}
 \newcommand{\idfn}{id}
@@ -66,9 +68,10 @@
 \newcommand{\secref}[1]{Section \ref{#1}}
 \newcommand{\figref}[1]{Figure \ref{#1}}
 \newcommand{\tabref}[1]{Table \ref{#1}}
+\newcommand{\KH}[1]{\textcolor{blue}{ #1}}
 
 
-\title{Learning an abstract system identification space for adaptive online control}
+\title{Embed to Identify: Learning an Abstract System Identification Space for Adaptive Control\\ with Deep Reinforcement Learning}
 
 % The \author macro works with any number of authors. There are two
 % commands used to separate the names and addresses of multiple
@@ -88,16 +91,17 @@
   \texttt{japreiss@usc.edu} \\
   %% examples of more authors
   \And
-  Karol Hausman \\
-  Google Brain \\
-  <TODO: what address?> \\
-  \texttt{TODO: google brain email?} \\
-  \AND
   Gaurav S. Sukhatme \\
   Department of Computer Science\\
   University of Southern California\\
   Los Angeles, CA 90089\\
   \texttt{gaurav@usc.edu} \\
+  \AND
+  Karol Hausman \\
+  Google Brain \\
+  1600 Amphitheatre Parkway\\
+  Mountain View, CA 94043 \\
+  \texttt{karolhausman@google.com} \\
   %% Coauthor \\
   %% Affiliation \\
   %% Address \\
@@ -120,6 +124,16 @@
 \maketitle
 
 \begin{abstract}
+Agents trained with reinforcement learning are often brittle and fail to generalize to test environments with different dynamics.
+This is particularly visible in the problem of simulation-to-real transfer where the test environment (real robot) is different from the simulation environment it was trained in.
+Domain randomization can make an agent more robust,
+but is limited to scenarios where a single policy is sufficient for all possible test environments.
+For larger changes in dynamics, some form of system identification is necessary,
+but identifying every dynamics parameter accurately is a difficult intermediate step to optimal behavior.
+We introduce a policy architecture and training scheme that learn an abstract embedding space
+that distills system identification information into a form that is both more useful and easier to estimate.
+In addition, we propose an observability-promoting reward that encourages the policy to balance the task goal with behavior that aids system identification.
+Our experiments demonstrate improved task performance and show desirable properties of the learned embedding.
 \end{abstract}
 
 \section{Introduction}
@@ -132,47 +146,45 @@ Yet, in contrast to the generality of RL itself,
 the policies trained with RL are usually highly specialized and fail to generalize to other similar environments,
 even when the differences are small~\citep{zhang-study-on-overfitting}.
 
-Overfitting to the training environment is problematic if we desire to deploy a trained policy on other systems.
-Training in a fast simulator and deploying on a real robot can save lots of time,
-but simulators cannot faithfully reproduce every detail of physical phenomena such as fluid dynamics or collision and friction forces.
-If a robot manufacturer wishes to train a policy in a lab and deploy it on mass-produced robots,
-they must account for manufacturing variations that will affect dynamics.
+Such overfitting to the training environment is problematic as it does not allow to transfer trained policies, e.g. from simulation to reality. Training in a fast simulator and deploying on a real robot can save time,
+but since simulators cannot faithfully reproduce every detail of physical phenomena such as fluid dynamics, contacts or friction forces, policies must be able to generalize from the training to the test scenario.
+The problem of overfitting to the training environment is important beyond simulation-to-real transfer -- e.g., when training a policy in a lab and deploying it on mass-produced robots with manufacturing variations, different wear ant tear, etc. that will affect dynamics.
 
-Failure to generalize has been the subject of intense attention from the RL community.
-Domain randomization of dynamics parameters~\citep{antonova-pivoting-corr17, zhu-RL-IL-diverse}
-or visual attributes~\citep{sadeghi-cad2rl-rss17,tobin-domainrand-arxiv17,james-domain-xfer}
-has demonstrated surprisingly good generalization ability without changes to the policy class or learning algorithm.
-Related approaches include ensembles of policies~\citep{actor-mimic,teh-distral},
-adversarial perturbations of state or observations~\citep{pinto-robust-adversarial-RL,huang-adversarial-attacks},
-and learning robust feature spaces~\citet{higgins-DARLA,bousmalis-domainseparation-nips16}.
-Fine-tuning or progressive networks~\citet{rusu-progressive-nets} \TODO{fine-tuning citation}
-use a policy trained in simulation as a starting point for further learning in the test environment.
-Model-agnostic meta-learning (MAML)~\citep{finn-maml-icml17}
-explicitly prepares for the fine-tuning by unrolling the policy gradient update in the training objective.
-\TODO{end this paragraph.}
+Failure to generalize has become the subject attention in the RL community.
+One of the most successful attempts to improve generalization is domain randomization of dynamics parameters~\citep{antonova-pivoting-corr17, zhu-RL-IL-diverse}
+or visual attributes~\citep{sadeghi-cad2rl-rss17,tobin-domainrand-arxiv17,james-domain-xfer} during training, such that the learned policy is invariant to those changes in the environment.
+Although domain randomization has demonstrated a surprisingly good generalization ability,
+it is inherently limited by its main assumption that a single policy performs sufficiently well in all domains.
+% Related approaches include ensembles of policies~\citep{actor-mimic,teh-distral},
+% adversarial perturbations of state or observations~\citep{pinto-robust-adversarial-RL,huang-adversarial-attacks},
+% and learning robust feature spaces~\citep{higgins-DARLA,bousmalis-domainseparation-nips16}.
+% Fine-tuning\TODO{fine-tuning citation} or progressive networks~\citep{rusu-progressive-nets} 
+% use a policy trained in simulation as a starting point for further learning in the test environment.
+% Model-agnostic meta-learning (MAML)~\citep{finn-maml-icml17}
+% explicitly prepares for the fine-tuning by unrolling the policy gradient update in the training objective.
+% \TODO{end this paragraph.}
 
-In this paper, we focus on scenarios where the variation in dynamics parameters
+
+In this paper, we instead propose an approach that can specialize its behavior online according to environment conditions. 
+We also introduce an observability-seeking behavior that encourages the agent to quickly obtain the information needed to specialize. 
+We focus on scenarios where the variation in dynamics parameters
 is large enough to impede domain randomization,
 but small enough that updating the parameters of the policy at test time is not strictly necessary.
-We introduce an architecture and training regime that produce a policy
-that can adapt online in real time to a test system with unknown dynamics parameters.
-Our framework is inspired by control theoretic architectures for online system identification
+Our proposed architecture and training regime produce a policy
+that adapts online in real time to a test system with unknown dynamics parameters.
+Our framework is inspired by control-theoretic architectures for online system identification
 similar to~\citet{yu-up-osi-rss17},
 but instead of attempting to identify the true parameters of the system,
 we learn an abstract embedding space that is both
 1) useful to help the policy behave optimally, and
 2) easy to identify from a short state-action trajectory.
-\citet{peng-dynamics-randomization-corr17} also avoid estimating the true parameters by using a recurrent policy,
-but our architecture makes it possible to explicitly encourage behavior that makes system identification easy
-in the RL reward.
+
 We demonstrate experimentally that our learned embeddings can perform dimensionality reduction on unobservable subspaces of the dynamics parameters,
 and separate nearby parameter values that require disjoint behavior styles.
 
 \section{Related Work}
-Work addressing RL generalization generally fall into one of two categories:
-those that attempt to improve the \emph{a priori} generalization performance of the policy without any data from the test environment,
-and those that update the parameters of the control policy \emph{a posteriori} after collecting some data from the test environment,
-or while training in both environments simultaneously.
+Work on RL generalization generally falls into one of two categories: those that improve \emph{a priori} generalization of the policy without data from the test environment,
+and those that update the parameters of the policy \emph{a posteriori} using data from the test environment.
 
 The most straightforward \emph{a priori} approach is domain randomization,
 in which the parameters of the dynamics and/or observations are randomized during training,
@@ -186,12 +198,7 @@ These methods focus on the visual part of the problem and use higher-level contr
 to abstract away physical details of the target system.
 Ensemble approaches optimize for mean performance over a set of models~\citep{mordatch-ensemble-icra15}
 or distill a set of expert policies into a single policy that performs well in all environments~\citep{actor-mimic,teh-distral}.
-
-Domain randomization has performed well in the literature and in our own experiments.
-However, domain randomization implicitly assumes that, given the observable states of the system,
-there exists an action that will produce acceptable behavior over all possible values of the hidden, randomized states.
-This assumption may not hold if the set of possible target environments is diverse.
-
+%
 Other \emph{a priori} approaches include adversarial setups,
 where a learned ``antagonist'' agent attempts to decrease the primary ``protagonist'' agent's reward
 by injecting physical disturbances into the system~\citep{pinto-robust-adversarial-RL}
@@ -200,44 +207,50 @@ or perturbing the observation input in vision-based agents~\citep{huang-adversar
 and train the agent on this space instead of pixel inputs.
 
 
-The \emph{a posteriori} approach has been widely deployed in visual domains
-using generative adversarial networks (GANs) in the single-direction~\citep{bousmalis-domain-gan-cvpr17}
-and cycle-gan cases~(\TODO{cite})
-or by learning a domain-invariant feature space~\citep{bousmalis-domainseparation-nips16}.
-
-\citet{christiano-deep-inverse-dynamics-corr16} learn an inverse dynamics model and use the trained policy in the simulator to select desired states.
-\TODO{characterize better.}
-
-\citet{rajeswaran-epopt-corr16} blended the two categories by introducing
-modifications to the training approach for blind policies
-\TODO{introduce terminology for ``blind'' policies}
-to adapt the simulated parameter distribution based on data from interacting with the target domain
-and to focus the training objective on those parameters where the policy performs worst.
-\TODO{run-on sentence}
-
-
+\emph{A posteriori} approaches assume that there will be a chance to interact with the test environment,
+potentially with poor task performance,
+and subsequently update the parameters of the policy.
+These updates may happen once at test time, or concurrently during training.
+%
 \citet{rusu-progressive-nets} deploy the \emph{progressive nets} framework
-where additional cross-connected layers are added to a neural network
-for sim-to-real transfer.
+where a neural network policy is trained in simulation, and new cross-connected layers are added
+at test time to adapt.
+%
+Model-agnostic meta-learning (MAML)~\citep{finn-maml-icml17} incorporates the policy gradient update step directly in its training objective,
+optimizing the policy to adapt to the test environment in a single gradient descent step after gathering a small amount of data.
+\citet{clavera-maml-model} apply a similar framework to model-based RL.
+%
+\citet{duan-rl2} train a recurrent policy that updates its own parameters after interacting with the test environment.
+%
+Visual differences between training and a specific test environment have been addressed
+using generative adversarial networks (GANs)~\citep{bousmalis-domain-gan-cvpr17}
+or by learning a domain-invariant feature space~\citep{bousmalis-domainseparation-nips16}.
+%
+%\citet{christiano-deep-inverse-dynamics-corr16} learn an inverse dynamics model and use the trained policy in the simulator to select desired states.
+%\TODO{characterize better.}
+%
+\citet{rajeswaran-epopt-corr16} train a policy with domain randomization, but
+adapt the parameter distribution and reward weights based on interactions with the target domain.
 
+Domain randomization is appealing in its simplicity, and has performed well in the literature and in our own experiments.
+However, it implicitly assumes that, given the observed state of the system,
+there exists an action that will produce acceptable behavior over all possible values
+of the unknown system identification parameters.
+This assumption may not hold if the set of possible test environments is diverse.
+%
 In cases where this assumption is violated, the policy must be able to behave differently in different environments,
 and there must be a mechanism to extract some information about the hidden parameters of the environment during interaction.
 This is the scenario considered in this paper.
 A similar approach to ours is~\citet{yu-up-osi-rss17},
 where the authors trained a policy that takes the dynamics parameters as input
 and an online system identification module to estimate them.
-We observe that estimating the true dynamics parameters is more work than needed--
-we can instead learn to map the dynamics parameters into an embedding space
+We observe that estimating the true dynamics parameters requires more work than needed --
+one can instead learn to map the dynamics parameters into an embedding space
 that is more useful for the policy, as well as being easier to estimate.
 ~\citet{peng-dynamics-randomization-corr17} make a similar observation and use a recurrent policy architecture.
 A recurrent architecture is able to extract information about the environment in its internal state without imposing any particular structure on the information that is extracted.
 By comparison, our framework makes it possible to modify the training reward such that the model is explicitly encouraged to behave in a manner that makes the parameters easily observable.
 
-Model-agnostic meta-learning (MAML)~\citep{finn-maml-icml17} is a hybrid of \emph{a priori} and \emph{a posteriori} approaches.
-MAML incorporates the policy gradient update step directly in its training objective,
-optimizing the policy for adapting to the test environment in a single gradient descent step after gathering a small amount of data.
-\citet{clavera-maml-model} apply a similar framework to model-based RL, training a meta-model in simulation
-to update rapidly after gathering few real-world trajectories.
 
 
 
@@ -259,52 +272,52 @@ task reward function $r : \cS \times \cA \mapsto \R$,
 and finite time horizon $H \in \mathbb{N}$.
 The state space $\cS$ is partitioned into
 the task space $\cS_T$
-and the dynamics space $\cS_D$, such that $\cS = \cS_T \times \cS_D$.
+and a probability distribution over the dynamics space $\cS_D$, such that $\cS = \cS_T \times \cS_D$.
 The task space $\cS_T$ consists of the intrinsic state of the robot, such as the angles and angular velocities of revolute joints,
 as well as task specification inputs such as a goal position.
 These states can be measured or accurately estimated in the real system.
-The \sysid{} space $\cS_D$ consists of parameters such as joint geometries, moments of inertia, sensor and actuator characteristics, and coefficients of drag or friction.
-These parameters may be unmeasurable or difficult to estimate.
+The \sysid{} space $\cS_D$ consists of parameters that may be unmeasureable or difficult to estimate, e.g. joint geometries, moments of inertia, sensor and actuator characteristics, and coefficients of drag or friction.
+We additionally overload the notation $\cS_D$ to refer to the probability distribution over these parameters.
 We seek to learn an optimal stochastic policy maximizing the expected reward over all \sysid{} parameters:
 \begin{equation}\begin{split}
 \pi : \cS \times \cA \mapsto \R_{\geq 0}, \quad
-\pi^\star = \argmax_\pi \E_{s_d \in \cS_D,\ \tau \sim p(\tau|\pi)} \sum_{t = 0}^H
+\pi^\star = \argmax_\pi \E_{s_d \sim \cS_D,\ \tau \sim p(\tau|\pi,s_D)} \sum_{t = 0}^H
 r(s_t, a_t),
 \label{objective}
 \end{split}\end{equation}
 where $\tau = (s_0, a_0, \dots, a_{H-1}, s_H)$ denotes a state-action trajectory
-and $p(\tau | \pi)$ denotes the probability of a trajectory $\tau$ in the given MDP under the policy $\pi$.
+and $p(\tau | \pi, s_D)$ denotes the probability of a trajectory $\tau$ in the given MDP under the policy $\pi$
+and \sysid{} parameters $s_D$.
 While training in the simulator, we assume that we have access to the ground truth \sysid{} parameters $s_d$.
-However, when testing, the true \sysid{} parameters are unknown.
+However, during test time, the true \sysid{} parameters are unknown, which makes the approach applicable to real world scenarios.
 %Due to the complexity and nonlinearity of real-world dynamics,
 %small errors in the measurements of these states can result in major differences between the behavior of the system in reality and in simulation.
 
-\section{Framework}
+\section{Embed to Identify (E2ID) Framework}
 A natural approach to the problem~\eqref{objective}, explored by~\citet{yu-up-osi-rss17},
 is to learn a function $\idfn$ to estimate $s_d \in \cS_D$ from a state-action trajectory $\tau_K = (s_1, a_1), (s_2, a_2), \dots, (s_K, a_K)$.
 The policy can be trained in simulation with known $s_d$;
 at test time, an estimate of $s_d$ is obtained from $\idfn$ in real time using a fixed-length history buffer of actions and observations.
-However, this approach presents two problems.
+However, this approach presents two challenges.
 %
 First, it requires estimating every system identification parameter,
 even though some may be difficult to estimate, redundant, or unneeded for the task.
 An example of this issue is shown in \secref{pointmass},
-where a mass and acutator power are reduced to a single dimensionless quantity.
-Reductions such as these can make the estimation problem easier, but they may not be easy to derive by hand on complex systems.
+where a mass and an actuator power are reduced to a single dimensionless quantity.
+Reductions such as these can make the system identification problem easier, but they may not be easy to derive by hand on complex systems.
 %
 Second, the behavior that maximizes the expected reward~\eqref{objective}
-in simulation with known $s_d$ may not be the best behavior for making the state estimation task easier.
+in simulation with known $s_d$ may not be the best behavior for making the system identification task easier.
 It is preferable to learn a behavior that balances the primary objective~\eqref{objective}
-with a secondary objective of making the system identification task as easy as possible.
+with a secondary objective of making the system identification task as easy as possible so that the agent can quickly identify how it should specialize its behavior.
 
 In this work, we present a framework that addresses both of these concerns.
 We introduce a learned function $\embedfn : \cS_D \mapsto \latent$
-\TODO{stochastic}
-that maps the system identification parameters to an abstract latent space $\latent \subset \R^\latent$.
+that maps the system identification parameters to an abstract latent space $\latent \subset \R^{d_L}$.
 We then learn a function $\idfn : (\cS \times \cA)^K \mapsto \latent$, for $1 < K \ll H$,
 that attempts to recover the value of the latent space by observing a state-action trajectory.
-The dimensionality $\R^\latent$ and the window length $K$ are user-chosen hyperparameters.
-The functions $\embedfn$ and $\idfn$ are learned simultaneously with the policy $\pi$.
+The latent space dimensionality $d_L$ and the window length $K$ are user-chosen hyperparameters.
+The functions $\embedfn$ and $\idfn$ are learned simultaneously with the policy $\pi$ in an end-to-end fashion.
 The latent space creates an opportunity to distill the full complexity of the system identification space $\cS_D$ into a space that is potentially more useful for the policy to produce optimal behavior,
 while simultaneously being easier to estimate.
 
@@ -312,14 +325,14 @@ While the latent space may help make the system identification task easier,
 it has a failure mode that must be considered:
 if $\embedfn$ and $\idfn$ both map to the same constant value for any input,
 $\idfn$ will achieve perfect performance during training,
-but the embedding will not influence the policy, and $\pi$ will be reduced to a ``lowest common denominator'' policy
+but the embedding will not influence the policy, and $\pi$ will be reduced to an average policy
 equivalent to that learned under pure domain randomization.
 To avoid this problem, we impose a structure where the parameters of the embedding function $e$
-can only be learned via the RL objective, which includes a term rewarding accurate state estimation of $id$:
+can only be learned via the RL objective, which includes a term rewarding accurate system identification of $id$:
 \begin{equation}\begin{split}
 %\pi^\star &= \argmax_\pi 
 J(\pi) = 
-\E_{s_d \in \cS_D,\ \tau \sim p(\tau|\pi)}
+\E_{s_d \sim \cS_D,\ \tau \sim p(\tau|\pi)}
 \left[
 \sum_{t = 0}^H r(s_t, a_t)
 - \alpha_{id} \sum_{t = 0}^{H-K} \| \idfn(\tau_{t:t+K}) - \embedfn(s_d) \|_2^2
@@ -334,10 +347,10 @@ In the modified objective~\eqref{objective-full},
 we emphasize that the $\alpha_{id}$ term is part of the reinforcement learning reward
 for the policy $\pi$.
 The parameters of $\idfn$ are considered constant with respect to $\pi$.
-The action $a_t$ is rewarded equally for the system identification accuracy
+The reward $r_{\idfn}$ of the action $a_t$ includes the system identification accuracy
 of all $K$-windows containing $t$, as follows:
 \begin{equation}\begin{split}
-r_{\idfn}(a_t) = \frac{1}{K}
+r_{\idfn}(s_t, a_t) = \frac{1}{K}
 \sum_{t' = t - K + 1}^t
 \| \idfn(\tau_{t':t'+K}) - \embedfn(s_d) \|_2^2
 \label{sysid-reward}
@@ -348,9 +361,10 @@ where the error is defined as zero for out-of-bound windows.
 %The latter ensures that the supervised learning data sets presented to the identification function $id$ do not require any separate whitening step.
 %\TODO{better motivation? It also helps avoid the collapse to a constant function,
 %but technically we already ``solve'' that by adding the estimation loss to the RL objective...}
-The state estimation function $\idfn$ is not updated by the RL algorithm.
+The system identification function $\idfn$ is not updated by the RL algorithm.
 It is updated in a separate supervised learning step, performed after each iteration of RL.
 We add entropy regularization $\cH(\pi)$ to $J(\pi)$ to stabilize the use of stochastic policy gradient RL algorithms.
+In addition, we add fixed Gaussian noise to the output of $\embedfn$ using the reparameterization trick; this encourages robustness against small errors in system identification at test time.
 
 In our experiments, $\idfn$ is parameterized by a one-dimensional convolutional neural network.
 The convolutional architecture is chosen to allow longer $K$ without requiring a large number of parameters.
@@ -358,21 +372,21 @@ Additionally, it matches the intuition that differentiation and/or integration o
 is often required to estimate the underlying dynamics parameters.
 The remaining functions are parameterized by fully-connected neural networks.
 We train $\pi$ with on-policy stochastic policy gradient RL algorithms
-that utilize an advantage function estimator function $A^\pi (s, a)$ to decrease the variance of the policy gradient estimate.
+that utilize an advantage function estimator $A^\pi (s, a)$ to decrease the variance of the policy gradient estimate.
 We implement $A^\pi$ as a function of the task state $s_t$ and the embedding value $\embedfn(s_d)$,
 allowing $A^\pi$ to benefit from the disentangled latent features.
 Our training process is summarized in Algorithm~\ref{algo}.
 Further details of the neural networks are given in~\secref{implementation}.
 
 
-\begin{algorithm}[h]
-\caption{\TODO{Name our method.}}
+\begin{algorithm}[hb]
+\caption{Embed to Identify (E2ID)}
 \begin{algorithmic}
 \For{\text{\emph{fixed number of iterations}}}
   \State sample dynamics parameters $s_D^1,\ \dots,\ s_D^N$ uniformly from $\cS_D$
   \State collect trajectories $\tau^1,\ \dots,\ \tau^N$ and task rewards from $\pi$ for each of the $N$ parameters
   \State evaluate $\idfn$ to estimate embedding $\hat e_D$ for sliding $k-$window over each $\tau$
-  \State assign 
+  \State compute $r_{\idfn}$ according to \eqref{sysid-reward} and add to task rewards $r(s_t,a_t)$
   \State update $\pi$ using on-policy RL for total reward $J(\pi)$ \eqref{objective-full}
   % $r = r_T + \alpha_{\cH}\cH(\pi) + \alpha_{ID} \E_{\pi} (\hat e_D - e_D(s_D))^2$
   \State update system identification network $\idfn$ using supervised learning
@@ -383,7 +397,7 @@ Further details of the neural networks are given in~\secref{implementation}.
 
 
 \begin{comment}
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \begin{tabular}{lll}
 Type     & Filters & Size \\
@@ -405,7 +419,7 @@ Linear   & dim($\latent$)   & -- \\
 
 \section{Experiments}
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \textbf{Training Time:}
 
@@ -413,11 +427,11 @@ Linear   & dim($\latent$)   & -- \\
 \input{experiment_setup.tex}
 \vspace{0.4cm}
 \caption{
-Overview of experimental setup in this paper.
+Overview of E2ID experimental setup.
 At training time, correct dynamics parameters are available from the simulator.
 A mapping $\embedfn$ from parameters to an abstract embedding space is learned,
 along with a module $\idfn$ to estimate the embedding value from a state-action trajectory $\tau$.
-The policy is rewarded for behavior that improves estimation accuracy.
+The policy is rewarded for behavior that improves system identification accuracy.
 At testing time, the true dynamics parameters are no longer known,
 and the estimated embeddings are input directly to the policy.
 }
@@ -427,23 +441,26 @@ and the estimated embeddings are input directly to the policy.
 In this section, we illustrate the desirable properties of the learned embedding space $\latent$
 and compare the performance of our architecture (denoted \embed) against several baselines:
 \begin{enumerate}
-\item \blind: A ``blind'' policy that has no access to $\cS_D$ in any form, representing the domain randomization.
-\item \plain: A policy conditioned on the true system identification parameters $\cS_D$ instead of the learned embedding, similar to~\citet{yu-up-osi-rss17}.
-\item \extra: Same as \plain, but with an extra fully connected layer between $\cS_D$ and $\pi$, such that the total number of policy parameters is equal to \embed.
+\item \blind: A ``blind'' policy that has no access to $s_D$ in any form, representing the domain randomization.
+\item \plain: A policy conditioned on the true system identification parameters $s_D$ instead of the learned embedding, similar to~\citet{yu-up-osi-rss17}, but with an extra fully connected layer between $s_D$ and $\pi$, such that the total number of policy parameters is equal to \embed.
 $\idfn$ is still trained to estimate $s_D$.
 %\item \traj: A policy where the state-action trajectory is input through a 1D convolutional network (identical to the SysID network) in training, without any condition that this network should estimate $\cS_D$ or an embedding.
 \end{enumerate}
-The structure of the experimental setup for \embed{} is illlustrated in~\figref{fig:overview}.
-\TODO{more here? but a lot of info is in the caption of~\figref{fig:overview}.}
+The structure of our experimental setup is illustrated in~\figref{fig:overview}.
+At training time, ground truth $s_D$ values are available.
+The embedding map $\embedfn : s_D \mapsto \latent$ 
+and the system identification function $\idfn$ are learned.
+At testing time, the true $s_D$ are no longer known,
+and the estimated $s_D$ from $\idfn$ is input directly to the policy.
 %The presented experimental results suggest that our embedding framework learns policies that generalize better than the alternatives \TODO{fingers crossed.}
 
 \subsection{Point-Mass Environment}
 \label{pointmass}
 The point-mass environment serves as a ``simplest possible'' scenario to demonstrate our approach.
-The low dimensions of this system allow us to visualize the properties of the learned embedding more easily.
+The low dimensionality of this system allow us to visualize the properties of the learned embedding more easily.
 The state space $\cS = (p \in \R^2, v \in \R^2)$ is position and velocity of the unit mass in 2D.
 The action space $\cA = [-1, 1]^2$ is a bounded force vector.
-The system identification space $\cS_D$ is a gain factor $g \in \pm[0.2, 2]$ \TODO{match code}.
+The system identification space $\cS_D$ is a gain factor $g \in \pm[0.175, 1.75]$.
 such that the true force applied to the mass is $g \cdot a$.
 The system dynamics are:
 \begin{equation}\begin{split}
@@ -457,7 +474,7 @@ by the reward function $r = -\|p\|_1$.
 %based on the minimum-time bang-bang solution to the implied optimal control problem.
 Due to the unknown sign of the gain factor, the \blind{} policy cannot possibly perform well in this environment.
 However, since the gain parameter $g$ is trivial to estimate,
-there is no reward difference between \embed{} and \plain{} or \extra{}.
+there is no reward difference between \embed{} and \extra{}.
 %\TODO{better explanation, avoid readers thinking it's too contrived}
 
 %The point-mass learning curves are shown in \TODO{figure}.
@@ -471,7 +488,7 @@ there is no reward difference between \embed{} and \plain{} or \extra{}.
        &          & test         & reward $\sigma$          & reward $\sigma$       \\
 flavor & $\alpha$ & reward $\mu$ &            (per-episode) &            (per-seed) \\
 \hline
-\blind & 0.1 & -80.3 & 27.6 & 2.6 \\
+\blind & N/A & -80.3 & 27.6 & 2.6 \\
 \plain & 0.1 & -70.8 & 28.2 & 2.4 \\
 \extra & 0.1 & -67.1 & 34.6 & 2.7 \\
 \embed & 0.1 & \textbf{-62.7} & 27.6 & 0.8 \\
@@ -479,43 +496,38 @@ flavor & $\alpha$ & reward $\mu$ &            (per-episode) &            (per-se
 \end{table}
 \end{comment}
 
+
 \begin{figure}
 \centering
-\includegraphics[width=0.8\textwidth]{pointmass_embed_mapping.pdf}
+\includegraphics[trim={13.7cm 0 2cm 0}, clip, width=0.35\textwidth]{pointmass_embed_mapping.pdf}
+\includegraphics[trim={0.5cm 0 1cm 0}, clip, width=0.63\textwidth]{pointmass_embed_scatter.pdf}
 \caption{
-Learned mapping from gain factor $g$ to two-dimensional embedding space in point-mass environment.
+\emph{Left}: One dimension of learned mapping $\embedfn$ from gain factor $g$ to 2D embedding space $\latent$ in point-mass environment.
+\emph{Middle}: Actual vs. estimated gain parameter $g$ for \plain{} policy.
+\emph{Right:} Actual vs. estimated learned embedding in $\latent$ with \embed{} policy (one of two dimensions).
+Embedding spreads positive and negative gain to more distant clusters.
 }
-\label{fig:embed-mapping}
+\label{embed-mapping}
 \end{figure}
-Figure~\ref{fig:embed-mapping} shows the learned mapping from the gain factor $g$
+
+
+\figref{embed-mapping} illustrates the learned mapping from the gain factor $g$
 to the embedding space $\latent$.
-The scatter plots in figure~\figref{fig:scatter} compare the ground truth embedding values
-against those estimated by $\idfn$ in the \embed policy,
-and for the gain factor $g$ against the values estimated by the SysID network in the \plain and \extra policies.
-\TODO{run-on sentence.}
+The scatter plots compare the ground truth embedding values
+against those estimated by $\idfn$ in the \embed{} policy,
+and the ground truth gain factor $g$ against the values estimated by the equivalent of $\idfn$ in the \plain{} policy.
 %Against the $x-$axis, density estimates are shown.
-Both figures illustrate that the learned embedding function $\embedfn$ ``squashes'' the gain factor $g$ into positive and negative clusters.
+Both illustrate that the learned embedding function $\embedfn$ ``squashes'' the gain factor $g$ into positive and negative clusters.
 The separation between these clusters is magnified, making it easier for the policy to switch between two disjoint behavior styles depending on the sign of the gain factor.
-\TODO{can we say anything less wishy-washy? how can we back up this claim?}
 The ``squashing'' does not impede the task reward of the policy,
-since a bang-bang control policy is optimal for any value of $g$.
+since an identical bang-bang control policy is optimal for any magnitude of $g$ -- only the sign of the input needs to change.
 
 Figure~\ref{fig:conditional_action} shows the policy output $\pi(a|s_D)$ conditioned on
 the gain factor $g$ at the initial task state $s_{t0} = (1, 1)$.
-\TODO{explain better}
+This illustrates that the policy contains two disjoint behaviors,
+and switches between these behaviors rapidly and precisely with the sign of the gain $g$.
 
 
-\begin{figure}
-\centering
-\includegraphics[width=0.85\textwidth]{pointmass_embed_scatter.pdf}
-%\includegraphics[width=0.45\textwidth]{pointmass_embed_scatter.pdf}
-\caption{Scatter plots of actual vs. estimated SysID values.
-\emph{Left:} gain parameter $g$ with ``plain'' policy.
-\emph{Right:} one of two learned embedding dimensions with ``embed'' policy.
-The embedding network separates the gain values into positive and negative clusters.
-}
-\label{fig:scatter}
-\end{figure}
 
 \begin{figure}
 \centering
@@ -544,7 +556,7 @@ Plot restricted to positive gain domain for clarity.
 \label{fig:embed_colors}
 \end{figure}
 A primary benefit of our approach is its ability to distill potentially complex sets of dynamics parameters
-into a simplified space where only the minimal information needed to achieve good rewards is preserved.
+into a simplified space where only the information needed to achieve good rewards is preserved.
 We illustrate this by constructing a version of the point-mass environment with redundant features:
 we add a mass parameter $m$ alongside the gain parameter $g$.
 Now, the true acceleration of the point is proportional to $g/m$,
@@ -565,7 +577,7 @@ in redundant point-mass environment.
 When $\alpha = 0.1$, \extra{} network alters its behavior in pursuit of the observability reward, but the dynamics parameters are impossible to estimate.
 The learning process is disturbed.
 When $\alpha = 0$, \extra{} network does not alter its behavior
-and learns a policy that accounts for the many-to-many characteristic of the estimation problem.
+and learns a policy that accounts for the many-to-many characteristic of the system identification problem.
 }
 \label{fig:redundant_fail}
 \end{figure}
@@ -573,13 +585,13 @@ and learns a policy that accounts for the many-to-many characteristic of the est
 
 
 Note that the learned embedding in these examples is two-dimensional -- 
-the operator does not need to know the minimal dimensionality of the parameters after redundancies are removed.
+the human operator does not need to know the minimal dimensionality of the parameters after redundancies are removed.
 This is important in scenarios with many parameters where identifying redundant parameters 
 is not as simple as in the point-mass environment.
 
 \subsection{Half-Cheetah Environment}
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \includegraphics[trim=4cm 3cm 0cm 4cm, clip, width=0.22\textwidth]{cheetah_short.png}\hfill
 \includegraphics[trim=4cm 3cm 0cm 4cm, clip, width=0.22\textwidth]{cheetah_medium.png}\hfill
 \includegraphics[trim=4cm 3cm 0cm 4cm, clip, width=0.22\textwidth]{cheetah_backleg.png}\hfill
@@ -597,46 +609,53 @@ and gear ratios of six rotary actuators.
 In total, 37 parameters are randomized.
 The embedding space $\latent$ is chosen to be 8-dimensional.
 Each end of the joint range is shifted by $\pm 0.3$ radians.
-All other parameters are multiplied by a ratio log-uniformly distributed in the range $[0.57, 1.75]$.
+All other parameters are multiplied by a ratio log-uniformly distributed in the range $[\beta^{-1}, \beta]$ with $\beta = 1.$.
 
 Due to the architecture of the MuJoCo physics simulator used in this environment~\citep{todorov-mujoco},
 it is not practical to sample new random dynamics parameters $s_D$ for each training iteration.
 Instead, we train on a fixed set of 64 randomized models.
-\TODO{talk about this being more stable than sampling from a larger ``universe'' of models?}
 At test time, we sample a new, independent set of 64 randomized models.
 %Instead, we construct a ``universe'' of 256 models initially, and randomly choose 8 of these environments for each training iteration.
 %At test time, we resample a new ``universe'' of models.
 
-Results from these experiments are showin in~\figref{cheetah-boxplot}.
-The experiments demonstrate that the learned embedding space helps to achieve higher rewards
-compared to estimating the dynamics properties directly.
-\TODO{replace with table -- reward variance is too high}
+Results from these experiments are shown in Table~\ref{cheetah}.
+The data show that, while the \extra{} policy performs slightly better in training,
+it suffers from worse generalization error.
+The \embed{} policies achieves lower generalization error and higher test rewards.
 Note that the training, as well as the test, performance for nonzero $\alpha$
 is better for both \embed{} and \extra{} policies.
 We hypothesize that behaving the same for all $s_D$ values, like the \blind{} policy,
 is a local optimum in the policy space,
-whereas the optimal policy behaves differently for each $s_D$,
-but this optimum is more difficult to find. \TODO{more technical terms.}
+whereas the optimal policy specializes for each $s_D$,
+but this optimum is more difficult to find.
 The observability reward provides an additional incentive
 for the policy to behave differently for environments with different $s_D$ values,
 pulling it away from the undesirable local optimum.
-\TODO{is this too much? we definitely want to say something like this,
-but maybe we can say it in a less provocative way.}
 
-\begin{figure}[h]
+\begin{table}[ht]
 \centering
-\includegraphics[width=\textwidth]{halfcheetah_rewards.pdf}
+\begin{tabular}{l l l l l l l}
+Type & $\alpha_{id}$ & $\mu_{train}$ & $\sigma_{train}$& $\mu_{test}$ & $\sigma_{test}$ & generalization error \\
+\hline
+\embed{} & 0 & 336.0 & 167.7 & 266.9 & 145.8 & -69.1 \\
+\embed{} & 0.01 & 363.2 & 170.5 & 288.6 & 145.5 & -74.6 \\
+\extra{} & 0.0 & 354.9 & 152.2  & 263.7 & 147.4 & -91.2 \\
+\extra{} & 0.01 & 370.9 & 149.6 & 274.5 & 141.4 & -96.4 \\
+\blind{} & N/A & 266.1 & 156.7 & 244.1 & 140.6 & -22.0
+\end{tabular}
+
+\vspace{0.4cm} \\
+
 \caption{
-Box plots of training and test rewards in half-cheetah environment for \extra{} and \embed{} policies.
+Training and test rewards in half-cheetah environment for \blind{}, \extra{}, and \embed{} policies.
 Learned embedding space gives significant improvement.
 Observability reward $\alpha$ gives moderate improvement.
 }
-\label{cheetah-boxplot}
-\end{figure}
+\label{cheetah}
+\end{table}
 
 These results suggest that learning the latent space $\latent$ is beneficial
 both for the training process and for the test performance.
-\TODO{more interpretation.}
 
 
 \subsection{Architecture and Implementation Notes}
@@ -645,8 +664,7 @@ In all experiments, we use Proximal Policy Optimization (PPO)~\citep{schulman-pp
 The policy $\pi$ is parameterized as a fully connected neural network with 3 hidden layers of 128 units each, using ReLU nonlinearities.
 The advantage function used as a baseline by PPO uses an identical network.
 The embedding function $\embedfn$ network contains 2 hidden layers with 74 units each.
-The system identification function $\idfn$ is composed of 3 convolutional layers followed by 2 fully-connected layers.
-\TODO{match the final details.}
+The system identification function $\idfn$ is composed of three 1D-convolutional layers, each with 64 filters of width 3 and ReLU activation, followed by a single fully connected layer with 128 units, and a linear output layer.
 
 
 \section{Conclusion}
