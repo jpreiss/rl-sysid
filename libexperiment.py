@@ -17,6 +17,7 @@ from baselines.common import set_global_seeds
 from baselines.trpo_mpi import trpo_batch
 from baselines.ppo1 import pposgd_batch
 from baselines.qtopt import qtopt_sysid
+from baselines.sac import sac_sysid
 import baselines.common.tf_util as U
 import baselines.common.batch_util2 as batch2
 
@@ -34,33 +35,34 @@ from sysid_batch_Q import SysIDQ
 
 # JSON schema for fully defining experiments
 spec_prototype = {
-    #"env" : "HalfCheetah-Batch-v1",
-    "env" : "CartPole-SysID-Batch-v0",
-    "n_batch" : 64,
+    "env" : "HalfCheetah-Batch-v1",
+    #"env" : "CartPole-SysID-Batch-v0",
+    "n_batch" : 8,
     "n_total" : 256,
-    "randomness" : 1.0,
+    "randomness" : 1.75,
 
     "test_mode": "tweak", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
 
-    "flavors" : ["blind", "extra", "embed"],
-    "alphas" : [0.0, 0.01, 0.03, 0.1],
+    "flavors" : ["embed"],
+    "alphas" : [0.0],
     "seeds" : [0],
 
-    "algorithm" : "qtopt",
+    "algorithm" : "sac",
     "opt_iters" : 20,
     "opt_batch" : 256,
-    "learning_rate" : 1e-2,
+    "learning_rate" : 1e-3,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
     "train_iters" : 2000,
     #"tdlambda" : 0.96,
+    "q_target_assign" : 10,
 
-    "embed_dim" : 8,
+    "embed_dim" : 32,
     "window" : 16,
 
-    "n_hidden" : 2,
-    "hidden_sz" : 32,
+    "n_hidden" : 3,
+    "hidden_sz" : 256,
     "activation" : "relu",
 }
 
@@ -119,8 +121,8 @@ def seed_csv_path(spec, flavor, alpha, seed):
 
 
 # for compatibility with OpenAI Baselines learning algorithms
-def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid):
-    def f(name, ob_space, ac_space):
+def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
+    def f(ob_space, ac_space, ob_input):
         sysid_dim = int(env.sysid_dim)
         for space in (ob_space, ac_space):
             assert isinstance(space, gym.spaces.Box)
@@ -135,13 +137,16 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid):
             window = spec["window"],
         )
         if spec["algorithm"] in ["qtopt"]:
+            raise NotImplementedError("adapt to not passing in name anymore.")
             return SysIDQ(name=name, flavor=flavor, dim=dim,
                 hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
                 alpha_sysid=alpha_sysid)
         else:
-            return SysIDPolicy(np_random=np_random, name=name, flavor=flavor, dim=dim,
-                hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
-                alpha_sysid=alpha_sysid)
+            hid_sizes = hid_sizes=[spec["hidden_sz"]] * spec["n_hidden"]
+            embed_sizes = [4 * dim.sysid, 4 * dim.embed]
+            return SysIDPolicy(ob_input=ob_input, flavor=flavor, dim=dim,
+                hid_sizes=hid_sizes, embed_hid_sizes=embed_sizes,
+                alpha_sysid=alpha_sysid, test=test)
     return f
 
 
@@ -154,7 +159,7 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
     var_init_npr = np.random.RandomState(seed)
     set_global_seeds(seed)
 
-    policy_fn = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid)
+    policy_fn = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid, test=False)
 
     gym.logger.setLevel(logging.WARN)
 
@@ -182,10 +187,19 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
     elif algo == "qtopt":
         trained_policy = qtopt_sysid.learn(env.np_random, env, policy_fn,
             learning_rate=spec["learning_rate"],
-            target_update_iters=4,
+            target_update_iters=spec["q_target_assign"],
             max_iters=spec["train_iters"],
             optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
-            td_lambda=0.9,
+            td_lambda=0.99,
+            schedule=spec["lr_schedule"],
+            logdir=csvdir
+        )
+    elif algo == "sac":
+        trained_policy = sac_sysid.learn(env.np_random, env, policy_fn,
+            #learning_rate=spec["learning_rate"],
+            max_iters=spec["train_iters"],
+            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
+            gamma=0.99,
             schedule=spec["lr_schedule"],
             logdir=csvdir
         )
@@ -207,7 +221,7 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
 
     alpha_sysid = 0 # doesn't matter at test time
     pi = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid)(
-        "pi", env.observation_space, env.action_space)
+        "pi", env.observation_space, env.action_space, test=True)
 
     seeddir = os.path.join(mydir, str(seed))
     ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
