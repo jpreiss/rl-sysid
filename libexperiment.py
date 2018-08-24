@@ -9,6 +9,9 @@ import multiprocessing
 import pdb
 import pickle
 import json
+import hashlib
+import shutil
+import subprocess
 
 import gym
 import logging
@@ -44,7 +47,8 @@ spec_prototype = {
     "test_mode": "tweak", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
 
-    "flavors" : ["embed"],
+    "flavors" : ["blind", "plain", "embed"],
+    #"flavors" : ["plain"],
     "alphas" : [0.0],
     "seeds" : [0],
 
@@ -54,16 +58,30 @@ spec_prototype = {
     "learning_rate" : 1e-3,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
-    "train_iters" : 2000,
+    "train_iters" : 200,
     #"tdlambda" : 0.96,
     "q_target_assign" : 10,
 
     "embed_dim" : 32,
     "window" : 16,
+    "embed_KL_weight" : 10.0,
 
-    "n_hidden" : 3,
-    "hidden_sz" : 256,
-    "activation" : "relu",
+    "n_hidden" : 2,
+    "hidden_sz" : 128,
+    "activation" : "selu",
+
+    "vf_grad_thru_embed" : False,
+}
+
+sac_params = {
+    "learning_rate" : 1e-3,
+    "reward_scale" : 5.0,
+    "tau" : 0.005,
+    "init_explore_steps" : 1e3,
+    "n_train_repeat" : 2,
+    "buf_len" : 1e5,
+    "minibatch" : 256,
+    "TD_discount" : 0.99,
 }
 
 def make(spec, **kwargs):
@@ -90,8 +108,10 @@ class SegArray(object):
                             return seed_segs
 
 # directory for the whole experiment
+# returns (path, <True if already exists>)
 def find_spec_dir(spec):
-    spec_hash = hash(json.dumps(spec, sort_keys=True)) % (1 << 32)
+    spec_blob = json.dumps(spec, sort_keys=True).encode("utf-8")
+    spec_hash = hashlib.md5(spec_blob).hexdigest()[:8]
     d = os.path.join("./results", str(spec_hash))
     spec_path = os.path.join(d, "config.json")
     if os.path.exists(spec_path):
@@ -99,15 +119,16 @@ def find_spec_dir(spec):
             dirspec = json.load(f)
             if dirspec != spec:
                 raise ValueError("Hash collision!!")
+        return d, True
     else:
-        os.makedirs(d)
+        os.makedirs(d, exist_ok=True)
         with open(spec_path, "w") as f:
             json.dump(spec, f)
-    return d
+        return d, False
 
 # directory for the specific flavor/alpha combination
 def dir_fn(spec, flavor, alpha):
-    d = find_spec_dir(spec)
+    d, _ = find_spec_dir(spec)
     return os.path.join(d, flavor, "alpha" + str(alpha))
 
 # directory for the flavor/alpha/seed combination
@@ -122,6 +143,7 @@ def seed_csv_path(spec, flavor, alpha, seed):
 
 # for compatibility with OpenAI Baselines learning algorithms
 def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
+    activation = { "relu" : tf.nn.relu, "selu" : tf.nn.selu }[spec["activation"]]
     def f(ob_space, ac_space, ob_input):
         sysid_dim = int(env.sysid_dim)
         for space in (ob_space, ac_space):
@@ -143,14 +165,17 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
                 alpha_sysid=alpha_sysid)
         else:
             hid_sizes = hid_sizes=[spec["hidden_sz"]] * spec["n_hidden"]
-            embed_sizes = [4 * dim.sysid, 4 * dim.embed]
+            embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
             return SysIDPolicy(ob_input=ob_input, flavor=flavor, dim=dim,
-                hid_sizes=hid_sizes, embed_hid_sizes=embed_sizes,
-                alpha_sysid=alpha_sysid, test=test)
+                hid_sizes=hid_sizes, embed_hid_sizes=[embed_middle_size], activation=activation,
+                alpha_sysid=alpha_sysid,
+                embed_KL_weight=spec["embed_KL_weight"],
+                test=test,
+            )
     return f
 
 
-def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
+def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
 
     env_id = spec["env"]
     env = make(spec)
@@ -195,13 +220,19 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir):
             logdir=csvdir
         )
     elif algo == "sac":
-        trained_policy = sac_sysid.learn(env.np_random, env, policy_fn,
-            #learning_rate=spec["learning_rate"],
+        trained_policy = sac_sysid.learn(sess, env.np_random, env, policy_fn,
+            learning_rate=spec["learning_rate"],
             max_iters=spec["train_iters"],
-            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
-            gamma=0.99,
-            schedule=spec["lr_schedule"],
-            logdir=csvdir
+            logdir=csvdir,
+            tboard_dir=tboard_dir,
+            init_explore_steps=spec["init_explore_steps"],
+            n_train_repeat=spec["n_train_repeat"],
+            buf_len=spec["buf_len"],
+            minibatch=spec["minibatch"],
+            TD_discount=spec["TD_discount"],
+            reward_scale=spec["reward_scale"],
+            tau=spec["tau"],
+            vf_grad_thru_embed = spec["vf_grad_thru_embed"],
         )
     else:
         assert False, "invalid choice of RL algorithm: " + algo
@@ -219,9 +250,11 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
     var_init_npr = np.random.RandomState(seed + delta_seed)
     set_global_seeds(seed + delta_seed)
 
+    ob_ph = tf.placeholder(tf.float32, (None, env.observation_space.shape[0]), "ob")
     alpha_sysid = 0 # doesn't matter at test time
-    pi = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid)(
-        "pi", env.observation_space, env.action_space, test=True)
+    with tf.variable_scope("pi"):
+        pi = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid, test=True)(
+            env.observation_space, env.action_space, ob_ph)
 
     seeddir = os.path.join(mydir, str(seed))
     ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
@@ -231,14 +264,14 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
     # while in some cases, you might set stochastic=False at test time
     # to get the "best" actions, for SysID stochasticity could be
     # an important / desired part of the policy
-    seg_gen = batch2.sysid_simple_generator(pi, env, stochastic=True, test=True)
+    seg_gen = batch2.sysid_simple_generator(sess, pi, env, stochastic=True, test=True)
     segs = list(islice(seg_gen, n_sysid_samples))
     return segs
 
 
 # train the policy, saving the training logs and trained policy
 # TODO this function can probably be eliminated
-def train_one_flavor(spec, flavor, alpha_sysid, mydir):
+def train_one_flavor(spec, flavor, alpha_sysid, mydir, tboard_dir):
     os.makedirs(mydir, exist_ok=True)
     #os.environ["CUDA_VISIBLE_DEVICES"] = ""
     n_seeds = len(spec["seeds"])
@@ -252,15 +285,17 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir):
         csvdir = os.path.join(seeddir, 'train_log')
         os.makedirs(csvdir, exist_ok=True)
 
-        dev = tf.device("/device:CPU:0")
-        dev.__enter__()
+        #dev = tf.device("/device:CPU:0")
+        #dev.__enter__()
         g = tf.Graph()
         U.flush_placeholders() # TODO get rid of U
         config = tf.ConfigProto()
-        # config.gpu_options.allow_growth = True
-        print(config)
+        config.gpu_options.allow_growth = True
+
         with tf.Session(graph=g, config=config) as sess:
-            mean_rews = train(spec, sess, flavor, alpha_sysid, seed, csvdir)
+
+            this_tboard_dir = os.path.join(tboard_dir, flavor, str(seed))
+            mean_rews = train(spec, sess, flavor, alpha_sysid, seed, csvdir, this_tboard_dir)
             ckpt_path = os.path.join(seeddir, "trained_model.ckpt")
             rews_path = os.path.join(seeddir, "mean_rews.pickle")
             with open(rews_path, "wb") as f:
@@ -313,9 +348,9 @@ def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 # helper fn for parallelization over flavors * alphas.
 # arg_fn should take (flavor, alpha) and return args for fn(*args).
 # returns list of (flavor, alpha, fn result).
-def grid(spec, fn, arg_fn, n_procs):
+def grid(spec, fn, arg_fn, n_procs, always_spawn=False):
     params = list(product(spec["flavors"], spec["alphas"]))
-    if n_procs == 1 or len(params) == 1:
+    if not always_spawn and (n_procs == 1 or len(params) == 1):
         return [(flavor, alpha, fn(*arg_fn(flavor, alpha))) for flavor, alpha in params]
     else:
         asyncs = []
@@ -329,10 +364,22 @@ def grid(spec, fn, arg_fn, n_procs):
 
 
 def train_all(spec, n_procs):
-    def train_arg_fn(flavor, alpha):
-        mydir = dir_fn(spec, flavor, alpha)
-        return spec, flavor, alpha, mydir
-    grid(spec, train_one_flavor, train_arg_fn, n_procs=n_procs)
+    # spawn tensorboard process
+    results_path, already_existed = find_spec_dir(spec)
+    if already_existed and not user_input_existing_dir(results_path):
+        return
+    tboard_path = os.path.join(results_path, "tboard/")
+
+    tboard_process = subprocess.Popen(["tensorboard", "--logdir", tboard_path])
+    print("Child TensorBoard process:", tboard_process.pid)
+
+    try:
+        def train_arg_fn(flavor, alpha):
+            mydir = dir_fn(spec, flavor, alpha)
+            return spec, flavor, alpha, mydir, tboard_path
+        grid(spec, train_one_flavor, train_arg_fn, n_procs=n_procs)
+    finally:
+        tboard_process.kill()
 
 
 def test_all(spec, sysid_iters, n_procs):
@@ -363,8 +410,8 @@ def flat_rewards(segs):
     return all_rews
 
 def sysid_err(segs):
-    trues = np.vstack(x[None,...] for x in iter_key(segs, "embed_true"))
-    estimates = np.vstack(x[None,...] for x in iter_key(segs, "embed_estimate"))
+    trues = np.vstack(x[None,...] for x in iter_key(segs, "est_true"))
+    estimates = np.vstack(x[None,...] for x in iter_key(segs, "est"))
     return np.mean((trues[:,None,...] - estimates) ** 2)
 
 def print_test_results(segs, flat_rews):
@@ -410,8 +457,8 @@ def load_env_mean_rewards(spec, flavor, alpha, seed):
         return pickle.load(f, encoding="bytes")
 
 def embed_scatter_data(segs):
-    trues = np.stack(iter_key(segs, "embed_true"))
-    estimates = np.stack(iter_key(segs, "embed_estimate"))
+    trues = np.stack(iter_key(segs, "est_true"))
+    estimates = np.stack(iter_key(segs, "est"))
     return trues, estimates
 
 
@@ -499,3 +546,26 @@ def boxprint(lines):
 
 def set_xterm_title(title):
     sys.stdout.write("\33]0;" + title + "\a")
+
+
+# if directory already exists, ask user what to do.
+# returns True if we should continue, False to abort.
+# >>> user can ask to rm -rf, this function does it! <<<
+def user_input_existing_dir(path):
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+        return True
+
+    while True:
+        response = input(
+            f"directory {path} already exists. Abort / Keep / Delete? (a/k/d)\n")
+        char = response[0].lower()
+        if char == "a":
+            return False
+        if char == "k":
+            return True
+        if char == "d":
+            shutil.rmtree(path)
+            os.mkdir(path)
+            return True
