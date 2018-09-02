@@ -1,0 +1,6 @@
+mention size of K in experiments
+experiment showing insensitivity to K and dimension
+statistical significance
+improve notation re. separate reward terms, unify in one equation
+extra related work on online SysID and task embeddings
+change params over time (emphasize Online)
