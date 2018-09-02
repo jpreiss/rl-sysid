@@ -19,6 +19,12 @@ def reward_boxplot(flavors, alphas, train_rews, test_rews):
 	whitebox = None
 	blackbox = None
 
+	import pdb
+	pdb.set_trace()
+
+	all_axes = []
+	ylim = [float("inf"), -float("inf")]
+
 	for i, flavor in enumerate(flavors):
 
 		ax = plt.Subplot(fig, outer[i])
@@ -42,6 +48,7 @@ def reward_boxplot(flavors, alphas, train_rews, test_rews):
 
 			p = ax.boxplot([train_rews[i,j,:], test_rews[i,j,:]], 
 				sym="",
+				whis=1.0,
 				patch_artist=True, widths=0.5)
 
 			# set the box plot's style
@@ -69,25 +76,30 @@ def reward_boxplot(flavors, alphas, train_rews, test_rews):
 
 			# align y axes, small expansion makes sure grid lines aren't clipped
 			# TODO: handle case where ylim from first isn't valid for rest
-			if ylim is None:
-				ylim = ax.get_ylim()
-				expand = 0.01 * (ylim[1] - ylim[0])
-				ylim = [ylim[0] - expand, ylim[1] + expand]
-			ax.set_ylim(ylim)
+			y0, y1 = ax.get_ylim()
+			ylim[0] = min(y0, ylim[0])
+			ylim[1] = max(y1, ylim[1])
 
 			# show y ticks only on the left-most plot
 			if ysrc is not None:
 				plt.setp(ax.get_yticklabels(), visible=False)
 				fig.add_subplot(ax, sharey=ysrc)
 			else:
-				tix = ax.get_yticks()
-				# force to use LaTeX-style interpreter
-				tix = ["${}$".format(int(t)) for t in tix]
-				ax.set_yticklabels(tix)
 				fig.add_subplot(ax)
 				ysrc = ax
 
 			ax.set_xlabel("$\\alpha = {}$".format(alpha))
+			all_axes.append(ax)
+	
+	expand = 0.01 * (ylim[1] - ylim[0])
+	ylim = [ylim[0] - expand, ylim[1] + expand]
+	for ax in all_axes:
+		ax.set_ylim(ylim)
+
+	tix = ysrc.get_yticks()
+	# force to use LaTeX-style interpreter
+	tix = ["${}$".format(int(t)) for t in tix]
+	ysrc.set_yticklabels(tix)
 
 	plt.legend((whitebox, blackbox), (r"$\mathrm{train}$", r"$\mathrm{test}$"), 
 		ncol=2, bbox_to_anchor=(1.05, 1.25), frameon=False, fontsize="medium",
