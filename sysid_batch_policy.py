@@ -1,19 +1,8 @@
-from collections import namedtuple
-
 import tensorflow as tf
 import numpy as np
 
-import baselines.common.batch_util2 as batch2
+from sysid_utils import Dim, MLP, SquashedGaussianPolicy, minibatch_iter
 
-
-# ob: observation without sysid added
-# sysid: mass, inertia, etc...
-# ob_concat: ob + sysid
-# ac: action
-# embed: dimensionality of embedding space
-# agents: number of agents in batch environment
-# window: length of rolling window for sysid network input
-Dim = namedtuple('Dim', 'ob sysid ob_concat ac embed agents window')
 
 # policy flavors:
 
@@ -43,7 +32,7 @@ class SysIDPolicy(object):
     # alpha_sysid shouldn't need to vary between environments - but we'll see...
     #
     # expects you to construct a variable scope for reusing, etc.
-    def __init__(self, ob_input, dim,
+    def __init__(self, ob_input, ob_traj_input, ac_traj_input, dim,
                  flavor, hid_sizes, embed_hid_sizes, activation,
                  alpha_sysid, embed_KL_weight,
                  test):
@@ -62,11 +51,14 @@ class SysIDPolicy(object):
 
         # placeholders
         ob, sysid = tf.split(ob_input, [dim.ob, dim.sysid], axis=-1)
-        self.ob_traj = tf.placeholder(tf.float32, (None, dim.window, dim.ob), name="ob_traj")
-        self.ac_traj = tf.placeholder(tf.float32, (None, dim.window, dim.ac), name="ac_traj")
+        #self.ob_traj = tf.placeholder(tf.float32, (None, dim.window, dim.ob), name="ob_traj")
+        #self.ac_traj = tf.placeholder(tf.float32, (None, dim.window, dim.ac), name="ac_traj")
+        self.ob_traj = ob_traj_input
+        self.ac_traj = ac_traj_input
         trajs = tf.concat([self.ob_traj, self.ac_traj], axis=-1)
 
         self.extra_rewards = []
+        self.extra_reward_names = []
         self.logs = []
 
         EMPTY_TENSOR = tf.constant(np.zeros((1,0)), name="EMPTY_TENSOR")
@@ -95,33 +87,36 @@ class SysIDPolicy(object):
             elif flavor == EXTRA:
                 self.est_target = sysid
                 sysid_val = self.estimator if test else sysid
-                embedder = batch2.MLP(sysid_val, "sysid_processor",
+                embedder = MLP(sysid_val, "sysid_processor",
                     embed_hid_sizes, dim.embed, activation=activation)
                 pol_input = embedder.out
                 vf_input = sysid
 
             elif flavor == EMBED:
-                self.est_target = embedder = batch2.MLP("embedder", sysid,
+                self.est_target = embedder = MLP("embedder", sysid,
                     embed_hid_sizes, dim.embed, activation=activation).out
                 embed_KL = tf.reduce_mean(kl_from_unit_normal(embedder))
-                self.extra_rewards.append((-embed_KL_weight * embed_KL, "neg_embed_KL"))
+                self.extra_rewards.append(-embed_KL_weight * embed_KL)
+                self.extra_reward_names.append("neg_embed_KL")
                 pol_input = self.estimator if test else embedder
                 vf_input = embedder
                 tf.summary.histogram("embeddings", embedder)
                 tf.summary.scalar("embed_KL", embed_KL)
 
             pol_input = concat_notnone([ob, pol_input], axis=-1, name="pol_input")
-            policy = batch2.SquashedGaussianPolicy("policy", pol_input,
+            policy = SquashedGaussianPolicy("policy", pol_input,
                 hid_sizes, dim.ac, tf.nn.relu)
             self.logs.append((tf.reduce_mean(policy.std), "mean_action_stddev"))
             self.ac_stochastic = policy.ac
             self.ac_mean = policy.mu
             self.reg_loss = policy.reg_loss
+            self.entropy = policy.entropy
+            self.pdf = policy
 
             # compute the log-probability of stochastic actions under policy.
             # note: does not stop gradient!!
             with tf.variable_scope("log_prob"):
-                self.log_prob = policy.logp(policy.raw_ac)
+                self.log_prob = policy.logp_raw(policy.raw_ac)
 
             pol_scope = tf.get_variable_scope().name
 
@@ -141,6 +136,11 @@ class SysIDPolicy(object):
             tf.GraphKeys.TRAINABLE_VARIABLES, pol_scope)
         self.estimator_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, estimator_scope)
+        self.all_vars = self.policy_vars + self.estimator_vars
+
+
+    def logp(self, actions):
+        return self.pdf.logp(actions)
 
 
     # given the ob/ac trajectories, estimates:
@@ -161,7 +161,7 @@ class SysIDPolicy(object):
             # split and recurse
             return np.vstack(list(
                 self.estimate_sysid(sess, o, a)
-                for o, a in batch2.minibatch_iter(2048, ob_trajs, ac_trajs)
+                for o, a in minibatch_iter(2048, ob_trajs, ac_trajs)
             ))
 
 

@@ -1,76 +1,60 @@
-#!/usr/bin/env python3
-
-from copy import deepcopy
-from itertools import *
-import os
-import sys
 import collections
+from copy import deepcopy
+import hashlib
+import itertools as it
+import json
 import multiprocessing
+import os
 import pdb
 import pickle
-import json
-import hashlib
 import shutil
 import subprocess
-
-import gym
-import logging
-
-from baselines.common import set_global_seeds
-from baselines.trpo_mpi import trpo_batch
-from baselines.ppo1 import pposgd_batch
-from baselines.qtopt import qtopt_sysid
-from baselines.sac import sac_sysid
-import baselines.common.tf_util as U
-import baselines.common.batch_util2 as batch2
+import sys
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf
-from tensorflow.python.client import device_lib
 import numpy as np
 import scipy as sp
+import gym
 
-
-import sysid_batch_policy
-from sysid_batch_policy import SysIDPolicy, Dim
-from sysid_batch_Q import SysIDQ
+import algos
+from sysid_batch_policy import SysIDPolicy
+#from sysid_batch_Q import SysIDQ # TODO: bring up to date
+from sysid_utils import Dim, sysid_simple_generator
 
 
 # JSON schema for fully defining experiments
-spec_prototype = {
+experiment_params = {
     "env" : "HalfCheetah-Batch-v1",
-    #"env" : "CartPole-SysID-Batch-v0",
-    "n_batch" : 8,
-    "n_total" : 256,
+    "n_batch" : 64,
+    "n_total" : 64,
     "randomness" : 1.5,
-
     "test_mode": "resample", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
-
-    "flavors" : ["blind"],
-    #"flavors" : ["embed"],
+    "flavors" : ["blind", "plain", "embed"],
     "alphas" : [0.0],
     "seeds" : [0],
-
-    "algorithm" : "sac",
-    "opt_iters" : 4,
-    "opt_batch" : 256,
-    "learning_rate" : 1e-3,
+    "algorithm" : "ppo",
     "lr_schedule" : "linear",
-    "entropy_coeff" : 0.010,
-    "train_iters" : 300,
-    #"tdlambda" : 0.96,
-    "q_target_assign" : 10,
+    "vf_grad_thru_embed" : False,
+    "TD_discount" : 0.99,
+}
 
+policy_params = {
     "embed_dim" : 32,
     "window" : 16,
     "embed_KL_weight" : 0.1,
-
     "n_hidden" : 2,
     "hidden_sz" : 128,
     "activation" : "relu",
+}
 
-    "vf_grad_thru_embed" : False,
+ppo_params = {
+    "learning_rate" : 1e-3,
+    "opt_iters" : 4,
+    "minibatch" : 256,
+    "entropy_coeff" : 0.010,
+    "train_iters" : 400,
 }
 
 sac_params = {
@@ -81,10 +65,19 @@ sac_params = {
     "n_train_repeat" : 2,
     "buf_len" : 1e5,
     "minibatch" : 256,
-    "TD_discount" : 0.99,
+    "train_iters" : 200,
 }
 
-def make(spec, **kwargs):
+spec = {
+    **experiment_params,
+    **policy_params,
+    **({"sac" : sac_params,
+        "ppo" : ppo_params,
+    }[experiment_params["algorithm"]])
+}
+
+
+def make_env(spec, **kwargs):
 
     kwargs = deepcopy(kwargs)
     for key in ["n_batch", "n_total", "randomness"]:
@@ -184,22 +177,21 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
 def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
 
     env_id = spec["env"]
-    env = make(spec)
+    env = make_env(spec)
     env.seed(seed)
 
     var_init_npr = np.random.RandomState(seed)
-    set_global_seeds(seed)
+    tf.set_random_seed(seed)
+    np.random.seed(seed)
 
     policy_fn = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid, test=False)
-
-    gym.logger.setLevel(logging.WARN)
 
     dim = get_dim(spec, env)
 
     algo = spec["algorithm"]
     if algo == "trpo":
-        #raise NotImplementedError
-        trained_policy = trpo_batch.learn(env, policy_fn,
+        raise NotImplementedError("update to baselines-free, new policies")
+        trained_policy = algos.trpo_sysid.learn(env, policy_fn,
             max_iters=spec["train_iters"],
             max_kl=0.003, cg_iters=10, cg_damping=0.1,
             gamma=0.99, lam=0.98,
@@ -207,11 +199,11 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
             entcoeff=spec["entropy_coeff"],
             logdir=csvdir)
     elif algo == "ppo":
-        trained_policy = pposgd_batch.learn(sess,
+        trained_policy = algos.ppo_sysid.learn(sess,
             env.np_random, env, dim, policy_fn,
             max_iters=spec["train_iters"],
             clip_param=0.2, entcoeff=spec["entropy_coeff"],
-            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
+            optim_epochs=spec["opt_iters"], optim_batchsize=spec["minibatch"],
             optim_stepsize=spec["learning_rate"],
             gamma=0.99, schedule=spec["lr_schedule"],
             #lam=spec["tdlambda"],
@@ -219,17 +211,18 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
             logdir=csvdir
         )
     elif algo == "qtopt":
-        trained_policy = qtopt_sysid.learn(env.np_random, env, policy_fn,
+        raise NotImplementedError("update to baselines-free, new policies")
+        trained_policy = algos.qtopt_sysid.learn(env.np_random, env, policy_fn,
             learning_rate=spec["learning_rate"],
             target_update_iters=spec["q_target_assign"],
             max_iters=spec["train_iters"],
-            optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
+            optim_epochs=spec["opt_iters"], optim_batchsize=spec["minibatch"],
             td_lambda=0.99,
             schedule=spec["lr_schedule"],
             logdir=csvdir
         )
     elif algo == "sac":
-        trained_policy = sac_sysid.learn(sess,
+        trained_policy = algos.sac_sysid.learn(sess,
             env.np_random, env, dim, policy_fn,
             learning_rate=spec["learning_rate"],
             max_iters=spec["train_iters"],
@@ -258,7 +251,8 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
     env.seed(seed + delta_seed)
 
     var_init_npr = np.random.RandomState(seed + delta_seed)
-    set_global_seeds(seed + delta_seed)
+    tf.set_random_seed(seed + delta_seed)
+    np.random.seed(seed + delta_seed)
 
     dim = get_dim(spec, env)
     ob_ph = tf.placeholder(tf.float32, (None, dim.ob_concat), "ob")
@@ -279,8 +273,8 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
     # while in some cases, you might set stochastic=False at test time
     # to get the "best" actions, for SysID stochasticity could be
     # an important / desired part of the policy
-    seg_gen = batch2.sysid_simple_generator(sess, pi, env, stochastic=True, test=True)
-    segs = list(islice(seg_gen, n_sysid_samples))
+    seg_gen = sysid_simple_generator(sess, pi, env, stochastic=True, test=True)
+    segs = list(it.islice(seg_gen, n_sysid_samples))
     return segs
 
 
@@ -303,7 +297,6 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir, tboard_dir):
         #dev = tf.device("/device:CPU:0")
         #dev.__enter__()
         g = tf.Graph()
-        U.flush_placeholders() # TODO get rid of U
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
 
@@ -321,9 +314,8 @@ def train_one_flavor(spec, flavor, alpha_sysid, mydir, tboard_dir):
 
 def render_different_envs(spec, flavor, alpha, seed, mydir):
 
-    env = make(spec)
+    env = make_env(spec)
     g = tf.Graph()
-    U.flush_placeholders()
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     with tf.Session(graph=g, config=config) as sess:
@@ -344,14 +336,13 @@ def render_different_envs(spec, flavor, alpha, seed, mydir):
 def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 
     tweak = spec["test_tweak"] if spec["test_mode"] == "tweak" else 0.0
-    env = make(spec, tweak=tweak)
+    env = make_env(spec, tweak=tweak)
 
     def test_one(flavor, alpha, seed):
         status = "{} | alpha = {} | seed {}/{}".format(
             flavor, alpha, seed + 1, len(spec["seeds"]))
         set_xterm_title(status)
         g = tf.Graph()
-        U.flush_placeholders()
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         with tf.Session(graph=g, config=config) as sess:
@@ -364,7 +355,7 @@ def test_one_flavor(spec, flavor, alpha, mydir, sysid_iters):
 # arg_fn should take (flavor, alpha) and return args for fn(*args).
 # returns list of (flavor, alpha, fn result).
 def grid(spec, fn, arg_fn, n_procs, always_spawn=False):
-    params = list(product(spec["flavors"], spec["alphas"]))
+    params = list(it.product(spec["flavors"], spec["alphas"]))
     if not always_spawn and (n_procs == 1 or len(params) == 1):
         return [(flavor, alpha, fn(*arg_fn(flavor, alpha))) for flavor, alpha in params]
     else:
@@ -477,6 +468,7 @@ def embed_scatter_data(segs):
 
 # compute the policy mean action at a fixed task state
 # conditioned on the SysID params
+# TODO: rewrite to use specs
 def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
 
     assert env_id == "PointMass-Batch-v0"
@@ -513,7 +505,7 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
 # generate data for plotting the mapping from SysID dimension to embedding.
 def sysids_to_embeddings(sess, env_id, seed, mydir):
 
-    env = gym.make(env_id)
+    env = gym.make_env(env_id)
     assert env.sysid_dim == len(env.sysid_names)
 
     alpha_sysid = 0 # doesn't matter at test time

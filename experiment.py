@@ -147,7 +147,7 @@ def embed_hist(spec):
 
 
 def main():
-    spec = {**lib.spec_prototype, **lib.sac_params}
+    spec = lib.spec
     results_path, already_existed = lib.find_spec_dir(spec)
 
     if already_existed and not lib.user_input_existing_dir(results_path):
