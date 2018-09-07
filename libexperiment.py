@@ -42,33 +42,33 @@ spec_prototype = {
     #"env" : "CartPole-SysID-Batch-v0",
     "n_batch" : 8,
     "n_total" : 256,
-    "randomness" : 1.75,
+    "randomness" : 1.5,
 
-    "test_mode": "tweak", # one of "resample" or "tweak"
+    "test_mode": "resample", # one of "resample" or "tweak"
     "test_tweak" : 1.1,
 
-    "flavors" : ["blind", "plain", "embed"],
-    #"flavors" : ["plain"],
+    "flavors" : ["blind"],
+    #"flavors" : ["embed"],
     "alphas" : [0.0],
     "seeds" : [0],
 
     "algorithm" : "sac",
-    "opt_iters" : 20,
+    "opt_iters" : 4,
     "opt_batch" : 256,
     "learning_rate" : 1e-3,
     "lr_schedule" : "linear",
     "entropy_coeff" : 0.010,
-    "train_iters" : 200,
+    "train_iters" : 300,
     #"tdlambda" : 0.96,
     "q_target_assign" : 10,
 
     "embed_dim" : 32,
     "window" : 16,
-    "embed_KL_weight" : 10.0,
+    "embed_KL_weight" : 0.1,
 
     "n_hidden" : 2,
     "hidden_sz" : 128,
-    "activation" : "selu",
+    "activation" : "relu",
 
     "vf_grad_thru_embed" : False,
 }
@@ -92,6 +92,21 @@ def make(spec, **kwargs):
 
     spec = gym.envs.registry.env_specs[spec["env"]]
     return spec.make(**kwargs)
+
+def get_dim(spec, env):
+    ob_space = env.observation_space
+    ac_space = env.action_space
+    sysid_dim = int(env.sysid_dim)
+    dim = Dim(
+        ob = ob_space.shape[0] - sysid_dim,
+        sysid = sysid_dim,
+        ob_concat = ob_space.shape[0],
+        ac = ac_space.shape[0],
+        embed = spec["embed_dim"],
+        agents = env.N,
+        window = spec["window"],
+    )
+    return dim
 
 class SegArray(object):
     def __init__(self, segs):
@@ -144,20 +159,11 @@ def seed_csv_path(spec, flavor, alpha, seed):
 # for compatibility with OpenAI Baselines learning algorithms
 def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
     activation = { "relu" : tf.nn.relu, "selu" : tf.nn.selu }[spec["activation"]]
-    def f(ob_space, ac_space, ob_input):
-        sysid_dim = int(env.sysid_dim)
+    def f(ob_space, ac_space, ob_input, ob_traj_input, ac_traj_input):
         for space in (ob_space, ac_space):
             assert isinstance(space, gym.spaces.Box)
             assert len(space.shape) == 1
-        dim = Dim(
-            ob = ob_space.shape[0] - sysid_dim,
-            sysid = sysid_dim,
-            ob_concat = ob_space.shape[0],
-            ac = ac_space.shape[0],
-            embed = spec["embed_dim"],
-            agents = env.N,
-            window = spec["window"],
-        )
+        dim = get_dim(spec, env)
         if spec["algorithm"] in ["qtopt"]:
             raise NotImplementedError("adapt to not passing in name anymore.")
             return SysIDQ(name=name, flavor=flavor, dim=dim,
@@ -166,7 +172,7 @@ def make_batch_policy_fn(np_random, spec, env, flavor, alpha_sysid, test):
         else:
             hid_sizes = hid_sizes=[spec["hidden_sz"]] * spec["n_hidden"]
             embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
-            return SysIDPolicy(ob_input=ob_input, flavor=flavor, dim=dim,
+            return SysIDPolicy(ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
                 hid_sizes=hid_sizes, embed_hid_sizes=[embed_middle_size], activation=activation,
                 alpha_sysid=alpha_sysid,
                 embed_KL_weight=spec["embed_KL_weight"],
@@ -188,6 +194,8 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
 
     gym.logger.setLevel(logging.WARN)
 
+    dim = get_dim(spec, env)
+
     algo = spec["algorithm"]
     if algo == "trpo":
         #raise NotImplementedError
@@ -199,7 +207,8 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
             entcoeff=spec["entropy_coeff"],
             logdir=csvdir)
     elif algo == "ppo":
-        trained_policy = pposgd_batch.learn(env.np_random, env, policy_fn,
+        trained_policy = pposgd_batch.learn(sess,
+            env.np_random, env, dim, policy_fn,
             max_iters=spec["train_iters"],
             clip_param=0.2, entcoeff=spec["entropy_coeff"],
             optim_epochs=spec["opt_iters"], optim_batchsize=spec["opt_batch"],
@@ -220,7 +229,8 @@ def train(spec, sess, flavor, alpha_sysid, seed, csvdir, tboard_dir):
             logdir=csvdir
         )
     elif algo == "sac":
-        trained_policy = sac_sysid.learn(sess, env.np_random, env, policy_fn,
+        trained_policy = sac_sysid.learn(sess,
+            env.np_random, env, dim, policy_fn,
             learning_rate=spec["learning_rate"],
             max_iters=spec["train_iters"],
             logdir=csvdir,
@@ -250,11 +260,16 @@ def test(spec, sess, env, flavor, seed, mydir, n_sysid_samples):
     var_init_npr = np.random.RandomState(seed + delta_seed)
     set_global_seeds(seed + delta_seed)
 
-    ob_ph = tf.placeholder(tf.float32, (None, env.observation_space.shape[0]), "ob")
+    dim = get_dim(spec, env)
+    ob_ph = tf.placeholder(tf.float32, (None, dim.ob_concat), "ob")
+    ob_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ob), "ob_traj")
+    ac_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ac), "ac_traj")
+
     alpha_sysid = 0 # doesn't matter at test time
     with tf.variable_scope("pi"):
         pi = make_batch_policy_fn(var_init_npr, spec, env, flavor, alpha_sysid, test=True)(
-            env.observation_space, env.action_space, ob_ph)
+            env.observation_space, env.action_space,
+            ob_ph, ob_traj_ph, ac_traj_ph)
 
     seeddir = os.path.join(mydir, str(seed))
     ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
@@ -364,14 +379,11 @@ def grid(spec, fn, arg_fn, n_procs, always_spawn=False):
 
 
 def train_all(spec, n_procs):
-    # spawn tensorboard process
     results_path, already_existed = find_spec_dir(spec)
-    if already_existed and not user_input_existing_dir(results_path):
-        return
+    # spawn tensorboard process
     tboard_path = os.path.join(results_path, "tboard/")
-
-    tboard_process = subprocess.Popen(["tensorboard", "--logdir", tboard_path])
-    print("Child TensorBoard process:", tboard_process.pid)
+    #tboard_process = subprocess.Popen(["tensorboard", "--logdir", tboard_path])
+    #print("Child TensorBoard process:", tboard_process.pid)
 
     try:
         def train_arg_fn(flavor, alpha):
@@ -379,7 +391,8 @@ def train_all(spec, n_procs):
             return spec, flavor, alpha, mydir, tboard_path
         grid(spec, train_one_flavor, train_arg_fn, n_procs=n_procs)
     finally:
-        tboard_process.kill()
+        #tboard_process.kill()
+        pass
 
 
 def test_all(spec, sysid_iters, n_procs):
