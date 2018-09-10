@@ -15,26 +15,18 @@ import plots
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 
-def test_pickle_path(spec):
-    p, _ = lib.find_spec_dir(spec)
-    return os.path.join(p, "test_results.pickle")
 
-def test(spec, sysid_iters, n_procs):
-    segs = lib.test_all(spec, sysid_iters, n_procs)
-    with open(test_pickle_path(spec), 'wb') as f:
-        pickle.dump(segs, f, protocol=4)
-
-def print_test(spec):
-    with open(test_pickle_path(spec), 'rb') as f:
-        segs = pickle.load(f, encoding="bytes")
-    flat_rews = lib.flat_rewards(segs)
-    lib.print_test_results(segs, flat_rews)
-    lib.print_anova(flat_rews)
-    fig = plots.flat_rew_hist(segs, flat_rews)
-    p, _ = lib.find_spec_dir(spec)
-    fig.savefig(os.path.join(p, "test_rewards_hist.pdf"))
+def print_test(multispec, rootdir):
+    results = lib.load_test_results(multispec, rootdir)
+    lib.print_test_results(multispec, results)
+    # TODO multispec plots
+    #lib.print_anova(flat_rews)
+    #fig = plots.flat_rew_hist(segs, flat_rews)
+    #p, _ = lib.find_spec_dir(spec)
+    #fig.savefig(os.path.join(p, "test_rewards_hist.pdf"))
 
 def train_vs_test_boxplot(spec):
+    raise NotImplementedError("multispec")
     with open(test_pickle_path(spec), 'rb') as f:
         segs = pickle.load(f, encoding="bytes")
     last_k = 12
@@ -60,6 +52,7 @@ def train_vs_test_boxplot(spec):
     fig = plots.reward_boxplot(spec["flavors"], spec["alphas"], train_rews, test_rews)
     p, _ = lib.find_spec_dir(spec)
     fig.savefig(os.path.join(p, "rewards.pdf"))
+
 """
 def latex_table(spec):
     with open(test_pickle_path(spec), 'rb') as f:
@@ -93,6 +86,7 @@ def latex_table(spec):
 
 
 def learning_curves(spec):
+    raise NotImplementedError("multispec")
     flavs, alphs = spec["flavors"], spec["alphas"]
     #rews = np.stack(np.stack(lib.load_all_learning_curves(spec, flavor, alpha)
             #for alpha in alphs)
@@ -109,6 +103,7 @@ def learning_curves(spec):
 
 
 def sysid_err_over_episodes(spec):
+    raise NotImplementedError("multispec")
     with open(test_pickle_path(spec), 'rb') as f:
         segs = pickle.load(f, encoding="bytes")
     segs = lib.SegArray(segs)
@@ -128,6 +123,7 @@ def sysid_err_over_episodes(spec):
 
 
 def embed_hist(spec):
+    raise NotImplementedError("multispec")
     with open(test_pickle_path(spec), 'rb') as f:
         all_segs = lib.SegArray(pickle.load(f, encoding="bytes"))
     seed, segs = all_segs.find("embed")[0]
@@ -147,39 +143,23 @@ def embed_hist(spec):
 
 
 def main():
-    spec = lib.spec
-    results_path, already_existed = lib.find_spec_dir(spec)
+    spec = lib.multispec
+    rootdir = lib.check_spec_dir(spec, "./results")
 
-    if already_existed and not lib.user_input_existing_dir(results_path):
-        return
+    np.seterr(all="raise")
 
-    n_procs = 3
-    lib.train_all(spec, n_procs)
-    test(spec, sysid_iters=32, n_procs=n_procs)
-    print_test(spec)
-    train_vs_test_boxplot(spec)
-    learning_curves(spec)
+    n_procs = 1
+    lib.train_multispec(spec, rootdir, n_procs)
+    lib.test_multispec(spec, rootdir, n_sysid_samples=8, n_procs=n_procs)
+    print_test(spec, rootdir)
+    #train_vs_test_boxplot(spec)
+    #learning_curves(spec)
     #embed_hist(spec)
 
-    # why do I need to chdir???
-    p, _ = lib.find_spec_dir(spec)
-    dir = os.path.abspath(p)
-    cwd = os.getcwd()
-    os.chdir(os.path.join(cwd, "results"))
-    try:
+    if os.path.exists("last"):
         os.remove("last")
-    except FileNotFoundError:
-        pass
-    dir_rel = os.path.relpath(dir)
-    os.symlink(dir_rel, "last")
-    os.chdir(cwd)
+    os.symlink(os.path.relpath(rootdir), "last")
 
-    if False:
-        rews = lib.load_env_mean_rewards(spec,
-            *(spec[s][0] for s in ("flavors", "alphas", "seeds")))
-        print("env version mean rewards:")
-        print(rews)
-        plt.hist(rews)
 
 if __name__ == '__main__':
     main()

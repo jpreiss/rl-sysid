@@ -6,6 +6,7 @@ import json
 import time
 import datetime
 import tempfile
+import typing
 
 #
 # copied from OpenAI baselines
@@ -266,9 +267,12 @@ dump_tabular = dumpkvs
 # ================================================================
 
 class Logger(object):
-    DEFAULT = None  # A logger with no output files. (See right below class definition)
-                    # So that you can still log to the terminal without setting up any output files
-    CURRENT = None  # Current logger being used by the free functions above
+    # A logger with no output files. (See right below class definition)
+    # So that you can still log to the terminal without setting up any output files
+    DEFAULT: typing.Optional["Logger"] = None
+
+    # Current logger being used by the free functions above
+    CURRENT: typing.Optional["Logger"] = None
 
     def __init__(self, dir, output_formats):
         self.name2val = {}  # values this iteration

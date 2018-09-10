@@ -131,6 +131,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
         except NotImplementedError:
             # e.g. exploration policy - just make up garbage
             embed_estimates = embed_trues + np.nan
+            meanerr2s = None
             sysid_loss = np.nan
             total_rews = rews
 
@@ -141,7 +142,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             "ob_traj" : ob_trajs, "ac_traj" : ac_trajs,
             "ep_rews" : ep_rews, "ep_lens" : horizon + 0 * ep_rews,
             "est_true" : embeds, "est" : embed_estimates,
-            "sysid_loss" : sysid_loss,
+            "est_mserr" : meanerr2s, "sysid_loss" : sysid_loss,
         }
 
 
@@ -183,7 +184,8 @@ class ReplayBuffer(object):
         if self.size < self.N:
             self.size += 1
         if self.cursor == 0:
-            print("replay buffer roll over")
+            #print("replay buffer roll over")
+            pass
         for buf, item in zip(self.bufs, args):
             buf[self.cursor] = item
         self.cursor = (self.cursor + 1) % self.N
