@@ -14,8 +14,6 @@ import sys
 import typing
 from typing import Dict, List, Tuple
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-import tensorflow as tf
 import numpy as np
 import scipy as sp
 import scipy.stats
@@ -23,54 +21,57 @@ import gym
 
 import algos
 from sysid_batch_policy import SysIDPolicy
-#from sysid_batch_Q import SysIDQ # TODO: bring up to date
+# from sysid_batch_Q import SysIDQ # TODO: bring up to date
 from sysid_utils import Dim, sysid_simple_generator
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+import tensorflow as tf  # noqa 402
 
 
 # JSON schema for fully defining experiments
 experiment_params = {
-    "env" : "HalfCheetah-Batch-v1",
-    "n_batch" : 1,
-    "n_total" : 64,
-    "randomness" : 1.75,
-    "test_mode": "resample", # one of "resample" or "tweak"
-    "test_tweak" : 1.1,
-    "flavor" : ["blind", "plain", "embed"],
-    #"flavor" : "blind",
-    "alpha_sysid" : [0.0, 0.01],
-    "seed" : [0, 1, 2],
-    "algorithm" : "sac",
-    "lr_schedule" : "constant",
-    "vf_grad_thru_embed" : False,
-    "TD_discount" : 0.99,
+    "env": "HalfCheetah-Batch-v1",
+    "n_batch": 1,
+    "n_total": 64,
+    "randomness": 1.75,
+    "test_mode": "resample",  # one of "resample" or "tweak"
+    "test_tweak": 1.1,
+    "flavor": ["blind", "plain", "embed"],
+    # "flavor": "blind",
+    "alpha_sysid": [0.0, 0.01],
+    "seed": [0, 1, 2],
+    "algorithm": "sac",
+    "lr_schedule": "constant",
+    "vf_grad_thru_embed": False,
+    "TD_discount": 0.99,
 }
 
 policy_params = {
-    "embed_dim" : 32,
-    "window" : 16,
-    "embed_KL_weight" : 0.1,
-    "n_hidden" : 2,
-    "hidden_sz" : 128,
-    "activation" : "relu",
+    "embed_dim": 32,
+    "window": 16,
+    "embed_KL_weight": 0.1,
+    "n_hidden": 2,
+    "hidden_sz": 128,
+    "activation": "relu",
 }
 
 ppo_params = {
-    "learning_rate" : 1e-3,
-    "opt_iters" : 4,
-    "minibatch" : 256,
-    "entropy_coeff" : 0.010,
-    "train_iters" : 400,
+    "learning_rate": 1e-3,
+    "opt_iters": 4,
+    "minibatch": 256,
+    "entropy_coeff": 0.010,
+    "train_iters": 400,
 }
 
 sac_params = {
-    "learning_rate" : 1e-3,
-    "reward_scale" : 5.0,
-    "tau" : 0.005,
-    "init_explore_steps" : int(1e3),
-    "n_train_repeat" : 2,
-    "buf_len" : int(1e5),
-    "minibatch" : 256,
-    "train_iters" : 2,
+    "learning_rate": 1e-3,
+    "reward_scale": 5.0,
+    "tau": 0.005,
+    "init_explore_steps": int(1e3),
+    "n_train_repeat": 2,
+    "buf_len": int(1e5),
+    "minibatch": 256,
+    "train_iters": 2,
 }
 
 
@@ -91,7 +92,7 @@ class Spec(dict):
     def dir(self):
         return self["directory"]
 
-    csv_name = "progress.csv" # TODO pass as arg to logging
+    csv_name = "progress.csv"  # TODO pass as arg to logging
     json_name = "config.json"
     saver_name = "trained_model.ckpt"
     test_pickle_name = "test_results.pickle"
@@ -102,11 +103,11 @@ _algo = typing.cast(str, experiment_params["algorithm"])
 multispec = Spec(kwargs={
     **experiment_params,
     **policy_params,
-    **({"sac" : sac_params,
-        "ppo" : ppo_params,
+    **({
+        "sac": sac_params,
+        "ppo": ppo_params,
     }[_algo])
 })
-
 
 
 # takes dict where some fields may be arrays,
@@ -144,13 +145,13 @@ def get_dim(spec: Spec, env: gym.Env) -> Dim:
     ac_space = env.action_space
     sysid_dim = int(env.sysid_dim)
     dim = Dim(
-        ob = ob_space.shape[0] - sysid_dim,
-        sysid = sysid_dim,
-        ob_concat = ob_space.shape[0],
-        ac = ac_space.shape[0],
-        embed = spec["embed_dim"],
-        agents = env.N,
-        window = spec["window"],
+        ob=ob_space.shape[0] - sysid_dim,
+        sysid=sysid_dim,
+        ob_concat=ob_space.shape[0],
+        ac=ac_space.shape[0],
+        embed=spec["embed_dim"],
+        agents=env.N,
+        window=spec["window"],
     )
     return dim
 
@@ -162,7 +163,8 @@ def make_batch_policy_fn(np_random, spec, env, test):
     flavor = spec["flavor"]
     alpha_sysid = spec["alpha_sysid"]
 
-    activation = { "relu" : tf.nn.relu, "selu" : tf.nn.selu }[spec["activation"]]
+    activation = {"relu": tf.nn.relu, "selu": tf.nn.selu}[spec["activation"]]
+
     def f(ob_space, ac_space, ob_input, ob_traj_input, ac_traj_input):
         for space in (ob_space, ac_space):
             assert isinstance(space, gym.spaces.Box)
@@ -170,13 +172,15 @@ def make_batch_policy_fn(np_random, spec, env, test):
         dim = get_dim(spec, env)
         if spec["algorithm"] in ["qtopt"]:
             raise NotImplementedError("adapt to not passing in name anymore.")
-            return SysIDQ(name=name, flavor=flavor, dim=dim,
+            return SysIDQ(
+                name=name, flavor=flavor, dim=dim,
                 hid_size=spec["hidden_sz"], n_hid=spec["n_hidden"],
                 alpha_sysid=alpha_sysid)
         else:
-            hid_sizes = hid_sizes=[spec["hidden_sz"]] * spec["n_hidden"]
+            hid_sizes = [spec["hidden_sz"]] * spec["n_hidden"]
             embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
-            return SysIDPolicy(ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
+            return SysIDPolicy(
+                ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
                 hid_sizes=hid_sizes, embed_hid_sizes=[embed_middle_size], activation=activation,
                 alpha_sysid=alpha_sysid,
                 embed_KL_weight=spec["embed_KL_weight"],
@@ -213,7 +217,8 @@ def train(spec: Spec, rootdir: str):
         algo = spec["algorithm"]
         if algo == "trpo":
             raise NotImplementedError("update to baselines-free, new policies")
-            trained_policy = algos.trpo_sysid.learn(env, policy_fn,
+            trained_policy = algos.trpo_sysid.learn(
+                env, policy_fn,
                 max_iters=spec["train_iters"],
                 max_kl=0.003, cg_iters=10, cg_damping=0.1,
                 gamma=spec["TD_discount"], lam=0.98,
@@ -221,20 +226,21 @@ def train(spec: Spec, rootdir: str):
                 entcoeff=spec["entropy_coeff"],
                 logdir=mydir)
         elif algo == "ppo":
-            trained_policy = algos.ppo_sysid.learn(sess,
-                env.np_random, env, dim, policy_fn,
+            trained_policy = algos.ppo_sysid.learn(
+                sess, env.np_random, env, dim, policy_fn,
                 max_iters=spec["train_iters"],
                 clip_param=0.2, entcoeff=spec["entropy_coeff"],
                 optim_epochs=spec["opt_iters"], optim_batchsize=spec["minibatch"],
                 optim_stepsize=spec["learning_rate"],
                 gamma=spec["TD_discount"], schedule=spec["lr_schedule"],
-                #lam=spec["tdlambda"],
+                # lam=spec["tdlambda"],
                 lam=0.96,
                 logdir=mydir
             )
         elif algo == "qtopt":
             raise NotImplementedError("update to baselines-free, new policies")
-            trained_policy = algos.qtopt_sysid.learn(env.np_random, env, policy_fn,
+            trained_policy = algos.qtopt_sysid.learn(
+                env.np_random, env, policy_fn,
                 learning_rate=spec["learning_rate"],
                 target_update_iters=spec["q_target_assign"],
                 max_iters=spec["train_iters"],
@@ -244,8 +250,8 @@ def train(spec: Spec, rootdir: str):
                 logdir=mydir
             )
         elif algo == "sac":
-            trained_policy = algos.sac_sysid.learn(sess,
-                env.np_random, env, dim, policy_fn,
+            trained_policy = algos.sac_sysid.learn(
+                sess, env.np_random, env, dim, policy_fn,
                 learning_rate=spec["learning_rate"],
                 max_iters=spec["train_iters"],
                 logdir=mydir,
@@ -257,7 +263,7 @@ def train(spec: Spec, rootdir: str):
                 TD_discount=spec["TD_discount"],
                 reward_scale=spec["reward_scale"],
                 tau=spec["tau"],
-                vf_grad_thru_embed = spec["vf_grad_thru_embed"],
+                vf_grad_thru_embed=spec["vf_grad_thru_embed"],
             )
         else:
             assert False, "invalid choice of RL algorithm: " + algo
@@ -300,7 +306,7 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int):
         ob_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ob), "ob_traj")
         ac_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ac), "ac_traj")
 
-        alpha_sysid = 0 # doesn't matter at test time
+        alpha_sysid = 0  # doesn't matter at test time
         with tf.variable_scope("pi"):
             pi = make_batch_policy_fn(var_init_npr, spec, env, test=True)(
                 env.observation_space, env.action_space,
@@ -340,13 +346,14 @@ def grid(specs: List[Spec], fn, arg_fn, n_procs: int, always_spawn=False):
 
 def train_multispec(spec: Spec, rootdir: str, n_procs: int):
     specs = multispec_product(spec)
-    #tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
-    #print("Child TensorBoard process:", tboard_process.pid)
+    # tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
+    # print("Child TensorBoard process:", tboard_process.pid)
     try:
-        arg_fn = lambda spec: (spec, rootdir)
+        def arg_fn(spec):
+            return spec, rootdir
         grid(specs, train, arg_fn, n_procs)
     finally:
-        #tboard_process.kill()
+        # tboard_process.kill()
         pass
 
 
@@ -358,7 +365,6 @@ def test_multispec(multispec, rootdir, n_sysid_samples: int, n_procs: int):
 
 
 def load_test_results(multispec, rootdir):
-    specs = multispec_product(multispec)
     def gen():
         for spec in multispec_product(multispec):
             path = os.path.join(rootdir, spec.dir(), Spec.test_pickle_name)
@@ -401,18 +407,15 @@ def print_test_results(multispec, results):
         return [(spec["seed"], result) for spec, result in results if matches_core(spec, core)]
 
     core_specs = multispec_product(dict_with(multispec, seed=None))
-    grouped = { json.dumps(core) : group_seeds(core) for core in core_specs }
-
+    grouped = {json.dumps(core): group_seeds(core) for core in core_specs}
 
     for corejson, seed_results in grouped.items():
         core = json.loads(corejson)
+
         def gen_lines():
-
             yield ", ".join(f"{k} = {core[k]}" for k in print_keys)
-
             rews = []
             rmses = []
-
             for seed, segs in seed_results:
                 r = ndarray_key(segs, "ep_rews")
                 rmse = np.sqrt(np.mean(ndarray_key(segs, "est_mserr"), axis=-1))
@@ -461,7 +464,7 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
     assert env_id == "PointMass-Batch-v0"
     env = gym.make(env_id)
 
-    alpha_sysid = 0 # doesn't matter at test time
+    alpha_sysid = 0  # doesn't matter at test time
     pi = make_batch_policy_fn(env, flavor, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
@@ -474,12 +477,12 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
     N = 1000
     x = np.linspace(-4, 4, N)
 
-    test_state = np.array([0.9, 0.9, 0, 0]) # env starting state - upper right corner
+    test_state = np.array([0.9, 0.9, 0, 0])  # env starting state - upper right corner
 
     def gen():
         for i, name in enumerate(env.sysid_names):
             sysid = np.zeros((N, env.sysid_dim))
-            sysid[:,i] = x
+            sysid[:, i] = x
             pi_input = np.hstack([np.tile(test_state, (N, 1)), sysid])
             actions, values = pi.act(False, pi_input)
             actions[actions < -1] = -1
@@ -496,7 +499,7 @@ def sysids_to_embeddings(sess, env_id, seed, mydir):
     env = gym.make_env(env_id)
     assert env.sysid_dim == len(env.sysid_names)
 
-    alpha_sysid = 0 # doesn't matter at test time
+    alpha_sysid = 0  # doesn't matter at test time
     pi = make_batch_policy_fn(env, sysid_batch_policy.EMBED, alpha_sysid)(
         "pi", env.observation_space, env.action_space)
 
@@ -508,14 +511,14 @@ def sysids_to_embeddings(sess, env_id, seed, mydir):
     if env.sysid_dim == 1:
         N = 1000
         x = np.linspace(*env.sysid_ranges[0], num=N)
-        y = pi.sysid_to_embedded(x[:,None])
+        y = pi.sysid_to_embedded(x[:, None])
         return name, x, y
 
     elif env.sysid_dim == 2:
         N = 256
         x0, x1 = np.meshgrid(
             *(np.linspace(r[0], r[1], N) for r in env.sysid_ranges))
-        input = np.concatenate([x0[:,:,None], x1[:,:,None]], axis=2)
+        input = np.concatenate([x0[:, :, None], x1[:, :, None]], axis=2)
         input = input.reshape((-1, 2))
         y = pi.sysid_to_embedded(input)
         y = y.reshape((N, N, 2))
@@ -537,8 +540,13 @@ def stats_str(x, axis=None):
 # print an array of strings surrounded by a box
 def boxprint(lines: List[str]):
     maxlen = max(len(s) for s in lines)
-    frame = lambda s, c: c + s + c[::-1]
-    rpad = lambda s: s + " " * (maxlen - len(s))
+
+    def frame(around, middle):
+        return around + middle + around[::-1]
+
+    def rpad(s):
+        return s + " " * (maxlen - len(s))
+
     bar = frame("-" * (maxlen + 2), "  *")
     print(bar)
     for line in lines:
@@ -585,4 +593,3 @@ def check_spec_dir(spec: Spec, rootdir: str) -> str:
             break
 
     return path
-
