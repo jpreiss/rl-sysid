@@ -34,14 +34,15 @@ class SysIDPolicy(object):
     # expects you to construct a variable scope for reusing, etc.
     def __init__(self, ob_input, ob_traj_input, ac_traj_input, dim,
                  flavor, hid_sizes, embed_hid_sizes, activation,
-                 alpha_sysid, embed_KL_weight,
+                 alpha_sysid, embed_KL_weight, seed,
                  test):
 
         if flavor not in SysIDPolicy.flavors:
             raise ValueError(f"flavor '{flavor}' does not exist")
 
         if test:
-            print("constructing policy using test input.")
+            #print("constructing policy using test input.")
+            pass
 
         # we store the flavor here for logging purposes, but RL algos should never read it
         self.flavor = flavor
@@ -77,7 +78,10 @@ class SysIDPolicy(object):
         with tf.variable_scope("policy"):
             if flavor == BLIND:
                 self.est_target = EMPTY_TENSOR
-                pol_input = vf_input = None
+                pol_input = None
+                vf_input = None
+                # TEMP DEBUG
+                #vf_input = sysid
 
             elif flavor == PLAIN:
                 self.est_target = sysid
@@ -105,7 +109,7 @@ class SysIDPolicy(object):
 
             pol_input = concat_notnone([ob, pol_input], axis=-1, name="pol_input")
             policy = SquashedGaussianPolicy("policy", pol_input,
-                hid_sizes, dim.ac, tf.nn.relu)
+                hid_sizes, dim.ac, tf.nn.relu, seed=seed)
             self.logs.append((tf.reduce_mean(policy.std), "mean_action_stddev"))
             self.ac_stochastic = policy.ac
             self.ac_mean = policy.mu
@@ -173,7 +177,7 @@ def sysid_convnet(input, sysid_dim):
     # but has better learning properties (TODO: find citation)
     conv3 = tf.layers.conv1d(conv2, filters=64, kernel_size=3, activation=tf.nn.relu)
     flat = tf.layers.flatten(conv3)
-    print("convnet flat dim:", flat.shape[1])
+    #print("convnet flat dim:", flat.shape[1])
     flat2 = tf.layers.dense(flat, 128, activation=tf.nn.relu)
     out = tf.layers.dense(flat2, sysid_dim)
     return out
