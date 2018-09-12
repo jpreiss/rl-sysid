@@ -13,7 +13,7 @@ from sysid_utils import MLP, ReplayBuffer, sysid_simple_generator, minibatch_ite
 
 
 class UniformPolicy(object):
-    def __init__(self, low, high):
+    def __init__(self, low, high, seed):
         self.low = low
         self.high = high
         self.flavor = "plain"
@@ -21,7 +21,7 @@ class UniformPolicy(object):
         self.est_target = tf.constant(np.zeros((1,0)))
         dist = tf.distributions.Uniform(low, high)
         N = tf.shape(self.ob)[0]
-        self.ac_stochastic = dist.sample(N)
+        self.ac_stochastic = dist.sample(N, seed=seed)
 
     def estimate_sysid(self, *args):
         raise NotImplementedError
@@ -46,6 +46,8 @@ def learn(
     reward_scale,      # SAC uses reward scaling instead of entropy weighting
     tau,               # exp. moving avg. speed for value fn estimator
     vf_grad_thru_embed,# whether to allow the value function's gradient to pass through the embedder or not
+
+    adam_epsilon=1e-8,
     ):
 
     # get dims
@@ -65,10 +67,6 @@ def learn(
     with tf.variable_scope("pi", reuse=True):
         pi_nextob = policy_func(env.observation_space, env.action_space, nextob_ph, ob_traj_ph, ac_traj_ph)
 
-    vf_in = pi.vf_input
-    if not vf_grad_thru_embed:
-        vf_in = tf.stop_gradient(vf_in)
-
     # TODO param
     vf_size = (256, 256, 256)
 
@@ -76,7 +74,13 @@ def learn(
     with tf.variable_scope("log_prob"):
         log_pi = pi.log_prob
 
+    meanent = tf.reduce_mean(pi.entropy)
+
     # value function
+    vf_in = pi.vf_input
+    if not vf_grad_thru_embed:
+        vf_in = tf.stop_gradient(vf_in)
+
     vf = MLP("myvf", vf_in, vf_size, 1, tf.nn.relu)
 
     # double q functions - these ones are used "on-policy" in the vf loss
@@ -100,8 +104,8 @@ def learn(
             if v in pol_vars])
         policy_loss = policy_kl_loss + pi_reg_losses + extra_losses
         tf.summary.scalar("policy_kl_loss", policy_kl_loss)
-        for t, name in zip(pi.extra_rewards, pi.extra_reward_names):
-            tf.summary.scalar(name, t)
+        #for t, name in zip(pi.extra_rewards, pi.extra_reward_names):
+            #tf.summary.scalar(name, t)
 
     # value function loss
     with tf.variable_scope("vf_loss"):
@@ -134,25 +138,25 @@ def learn(
 
 
     # training ops
-    policy_opt_op = tf.train.AdamOptimizer(learning_rate, name="policy_adam").minimize(
+    policy_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="policy_adam").minimize(
         policy_loss, var_list=pi.policy_vars)
 
-    vf_opt_op = tf.train.AdamOptimizer(learning_rate, name="vf_adam").minimize(
+    vf_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="vf_adam").minimize(
         vf_loss, var_list=vf.vars)
 
-    qf1_opt_op = tf.train.AdamOptimizer(learning_rate, name="qf1_adam").minimize(
+    qf1_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="qf1_adam").minimize(
         TD_loss1, var_list=qf1.vars)
 
-    qf2_opt_op = tf.train.AdamOptimizer(learning_rate, name="qf2_adam").minimize(
+    qf2_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="qf2_adam").minimize(
         TD_loss2, var_list=qf2.vars)
 
     train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
 
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
-        estimator_opt_op = tf.train.AdamOptimizer(learning_rate, name="estimator_adam").minimize(
+        estimator_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="estimator_adam").minimize(
             pi.estimator_loss, var_list=pi.estimator_vars)
-        tf.summary.scalar("estimator_loss", pi.estimator_loss)
+        #tf.summary.scalar("estimator_loss", pi.estimator_loss)
     else:
         estimator_opt_op = None
 
@@ -216,9 +220,10 @@ def learn(
 
 
     explore_epochs = int(np.ceil(float(init_explore_steps) / (N * env.ep_len)))
-    print(f"random exploration stage: {explore_epochs} epochs...")
+    #print(f"random exploration stage: {explore_epochs} epochs...")
 
-    policy_uniform = UniformPolicy(-np.ones(dim.ac), np.ones(dim.ac))
+    policy_uniform = UniformPolicy(
+        -np.ones(dim.ac), np.ones(dim.ac), seed=np_random.randint(100))
     policy_uniform.dim = pi.dim
 
     exploration_gen = sysid_simple_generator(sess,
@@ -228,11 +233,11 @@ def learn(
     for i, seg in enumerate(it.islice(exploration_gen, explore_epochs)):
         # callback does almost all the work
         do_train = replay_buf.size > 2000
-        print(f"exploration epoch {i} complete")
+        #print(f"exploration epoch {i} complete")
 
     do_train = True
 
-    print("begin policy rollouts")
+    #print("begin policy rollouts")
 
     iters_so_far = 0
     tstart = time.time()
@@ -248,7 +253,7 @@ def learn(
         logger.record_tabular("IterSeconds", (tend - tstart))
         tstart = tend
         if max_iters and iters_so_far >= max_iters:
-            print("breaking due to max iters")
+            #print("breaking due to max iters")
             break
 
         logger.log("********** Iteration %i ************"%iters_so_far)
@@ -276,7 +281,7 @@ def learn(
             sum_mserr = 0.0
             count = 0
             for ob, obt, act in minibatch_iter(minibatch,
-                ob_flat, ob_traj, ac_traj):
+                ob_flat, ob_traj, ac_traj, np_random=np_random):
                 estimator_loss, _ = sess.run([pi.estimator_loss, estimator_opt_op], {
                     pi.ob : ob,
                     pi.ob_traj : obt,
@@ -285,6 +290,10 @@ def learn(
                 sum_mserr += estimator_loss
                 count += 1
             logger.record_tabular("estimator_rmse", np.sqrt(sum_mserr / count))
+
+        # get one-step policy entropy
+        ent = sess.run(meanent, { pi.ob : ob_flat })
+        logger.record_tabular("entropy", ent)
 
         #logger.record_tabular("V_loss", V_loss_b)
         #logger.record_tabular("V_mean", np.mean(V_b.flat))
