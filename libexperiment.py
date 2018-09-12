@@ -31,8 +31,9 @@ import tensorflow as tf  # noqa 402
 # JSON schema for fully defining experiments
 experiment_params = {
     "env": "HalfCheetah-Batch-v1",
-    "n_batch": 1,
-    "n_total": 64,
+    "ep_len": 500,
+    "n_batch": 8,
+    "n_total": 256,
     "randomness": 1.75,
     "test_mode": "resample",  # one of "resample" or "tweak"
     "test_tweak": 1.1,
@@ -71,15 +72,15 @@ sac_params = {
     "n_train_repeat": 2,
     "buf_len": int(1e5),
     "minibatch": 256,
-    "train_iters": 2,
+    "train_iters": 200,
 }
 
 
 # represents exactly one experiment - one seed, policy type, etc.
 # mainly exists to centralize all decisions about how to store results on disk
 class Spec(dict):
-    def __init__(self, kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, specdict={}, **kwargs):
+        super().__init__(**{**specdict, **kwargs})
 
     def hash(self) -> str:
         blob = json.dumps(self, sort_keys=True).encode("utf-8")
@@ -134,7 +135,7 @@ def multispec_product(spec: Spec) -> List[Spec]:
 def make_env(spec, **kwargs) -> gym.Env:
 
     kwargs = deepcopy(kwargs)
-    for key in ["n_batch", "n_total", "randomness"]:
+    for key in ["n_batch", "n_total", "randomness", "ep_len"]:
         kwargs[key] = spec[key]
     spec = gym.envs.registry.env_specs[spec["env"]]
     return spec.make(**kwargs)
@@ -184,6 +185,7 @@ def make_batch_policy_fn(np_random, spec, env, test):
                 hid_sizes=hid_sizes, embed_hid_sizes=[embed_middle_size], activation=activation,
                 alpha_sysid=alpha_sysid,
                 embed_KL_weight=spec["embed_KL_weight"],
+                seed=np_random.randint(100),
                 test=test,
             )
     return f
@@ -198,7 +200,6 @@ def train(spec: Spec, rootdir: str):
     seed = spec["seed"]
     env.seed(seed)
     var_init_npr = np.random.RandomState(seed)
-    np.random.seed(seed)
 
     dim = get_dim(spec, env)
 
@@ -209,11 +210,11 @@ def train(spec: Spec, rootdir: str):
     policy_fn = make_batch_policy_fn(var_init_npr, spec, env, test=False)
 
     g = tf.Graph()
+    g.seed = seed
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
 
     with tf.Session(config=config, graph=g) as sess:
-        tf.set_random_seed(seed)
         algo = spec["algorithm"]
         if algo == "trpo":
             raise NotImplementedError("update to baselines-free, new policies")
@@ -289,9 +290,9 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int):
         seed += 100
     env.seed(seed)
     var_init_npr = np.random.RandomState(seed)
-    np.random.seed(seed)
 
     g = tf.Graph()
+    g.seed = seed
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
 
@@ -300,7 +301,6 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int):
 
     with tf.Session(config=config, graph=g) as sess:
 
-        tf.set_random_seed(seed)
         dim = get_dim(spec, env)
         ob_ph = tf.placeholder(tf.float32, (None, dim.ob_concat), "ob")
         ob_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ob), "ob_traj")
@@ -465,7 +465,7 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
     env = gym.make(env_id)
 
     alpha_sysid = 0  # doesn't matter at test time
-    pi = make_batch_policy_fn(env, flavor, alpha_sysid)(
+    pi = make_batch_policy_fn(env, flavor, alpha_sysid, seed=seed)(
         "pi", env.observation_space, env.action_space)
 
     seeddir = os.path.join(mydir, str(seed))
