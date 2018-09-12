@@ -1,0 +1,32 @@
+{
+    "env": "HalfCheetah-Batch-v1",
+    "ep_len": 500,
+    "n_batch": 8,
+    "n_total": 1,
+    "randomness": 1.75,
+    "test_mode": "resample",
+    "test_tweak": 1.1,
+    "flavor": ["blind"],
+    "alpha_sysid": [0.0],
+    "seed": false,
+    "algorithm": "sac",
+    "lr_schedule": "constant",
+    "vf_grad_thru_embed": false,
+    "TD_discount": 0.99,
+
+    "embed_dim": [0],
+    "window": 16,
+    "embed_KL_weight": 0.1,
+    "n_hidden": 2,
+    "hidden_sz": 128,
+    "activation": "relu",
+
+    "learning_rate": 1e-3,
+    "reward_scale": 5.0,
+    "tau": 0.005,
+    "init_explore_steps": 1e3,
+    "n_train_repeat": 2,
+    "buf_len": 1e5,
+    "minibatch": 256,
+    "train_iters": 100
+}
