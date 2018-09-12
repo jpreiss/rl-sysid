@@ -242,17 +242,18 @@ class MLP(object):
 
 
 class SquashedGaussianPolicy(object):
-    def __init__(self, name, input, hid_sizes, output_size, activation, reg=None, reuse=False):
+    def __init__(self, name, input, hid_sizes, output_size, activation,
+                 seed, reg=None, reuse=False):
 
         self.name = name
         self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
         self.mlp.out *= 0.1
         self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
-        #self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
-        self.logstd = -0.3 + 0.0 * self.mu
+        self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
+        #self.logstd = -0.3 + 0.0 * self.mu
         self.std = tf.exp(self.logstd)
         self.pdf = tf.distributions.Normal(loc=self.mu, scale=self.std)
-        self.raw_ac = self.pdf.sample()
+        self.raw_ac = self.pdf.sample(seed=seed)
         self.ac = tf.tanh(self.raw_ac)
 
         with tf.variable_scope("squashed_entropy_bound"):
@@ -281,9 +282,12 @@ class SquashedGaussianPolicy(object):
         return self.mlp.vars
 
 
-def minibatch_iter(size, *args):
+def minibatch_iter(size, *args, np_random=None):
     N = args[0].shape[0]
-    order = np.random.permutation(N)
+    if np_random is not None:
+        order = np_random.permutation(N)
+    else:
+        order = np.arange(N)
     for k in range(0, N - size + 1, size):
         yield (a[order[k:(k+size)]] for a in args)
     if N % size != 0:
