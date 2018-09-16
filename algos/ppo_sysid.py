@@ -69,7 +69,9 @@ def learn(sess,
     pol_surr = tf.reduce_mean(tf.minimum(surr1, surr2))
 
     # value function
-    vf = MLP("vf", pi.vf_input, (128, 64), 1, tf.nn.relu)
+    vf_in = pi.vf_input
+    vf_in = tf.stop_gradient(vf_in)
+    vf = MLP("vf", vf_in, (256, 256, 256), 1, tf.nn.relu)
     vf_loss = tf.reduce_mean(tf.square(vf.out - ret_b))
 
     # total loss for reinforcement learning
@@ -135,6 +137,7 @@ def learn(sess,
         seg["vpred"] = vpred.reshape(seg["task_rews"].shape)
 
         logger.log(f"********** Iteration {iter} ************")
+        logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first
 
         add_vtarg_and_adv(seg, gamma, lam)
         # flatten leading (agent, rollout) dims to one big batch

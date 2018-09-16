@@ -349,3 +349,15 @@ And the vf loss is squared error, so it blows up a lot.
 
 Anyway, since we can learn a good policy in <= 200 iters with either Adam or SGD,
 despite the big vf_loss, I'm going to stop worrying about it for now.
+
+
+Sept 11
+-------
+TODO:
+- sweep embed dim with multiple seeds
+- look into q fn error / variance
+- better environment
+- PPO-blind vs. SAC-ours
+- why is embed worse than plain
+- writing about our "insight"
+

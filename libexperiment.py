@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import typing
-from typing import Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import numpy as np
 import scipy as sp
@@ -394,23 +394,50 @@ def dict_with(d, **kwargs):
     return d2
 
 
+def group_seeds(specs: List[Spec], attached: List[Any]) -> List[Tuple[Spec, List[Tuple[int, Any]]]]:
+
+    if len(specs) == 0:
+        specs = multispec_product(specs[0])
+
+    cores = []
+    for s in specs:
+        s2 = dict_with(s, seed=None, directory=None)
+        if s2 in cores:
+            continue
+        cores.append(s2)
+
+    def matches(core, spec):
+        return core == dict_with(spec, seed=None, directory=None)
+
+    def find_seeds(core):
+        for spec, att in zip(specs, attached):
+            if matches(core, spec):
+                seed = spec["seed"]
+                #print(f"yielding ({seed}, {att})")
+                yield seed, att
+
+    return [(core, list(find_seeds(core))) for core in cores]
+
+
+def group_reduce(specs: List[Spec], attached: List[Any],
+    reducer: Callable[[List[Any]], Any]) -> List[Tuple[Spec, Any]]:
+
+    groups = group_seeds(specs, attached)
+    def gen():
+        for spec, seeditems in groups:
+            items = [item for seed, item in seeditems]
+            yield spec, reducer(items)
+    return list(gen())
+
+
 def print_test_results(multispec, results):
     print("Printing results for Spec:")
     print(json.dumps(multispec, indent=4, sort_keys=True).replace('"', ''))
     print_keys = [k for k, v in multispec.items() if type(v) == list and k != "seed"]
 
-    def matches_core(core, spec):
-        return (dict_with(core, seed=None, directory=None) ==
-                dict_with(spec, seed=None, directory=None))
+    grouped = group_seeds(*zip(*results))
 
-    def group_seeds(core):
-        return [(spec["seed"], result) for spec, result in results if matches_core(spec, core)]
-
-    core_specs = multispec_product(dict_with(multispec, seed=None))
-    grouped = {json.dumps(core): group_seeds(core) for core in core_specs}
-
-    for corejson, seed_results in grouped.items():
-        core = json.loads(corejson)
+    for core, seed_results in grouped.items():
 
         def gen_lines():
             yield ", ".join(f"{k} = {core[k]}" for k in print_keys)
