@@ -131,6 +131,20 @@ def multispec_product(spec: Spec) -> List[Spec]:
     return list(rec(spec, ""))
 
 
+# returns Spec with list values for any key with varying values across input Specs
+def multispec_union(specs: List[Spec]) -> Spec:
+    for spec in specs:
+        spec.assert_is_scalar()
+    keys = set().union(s.keys() for s in specs)
+    s = {}
+    for k in keys:
+        vals = set(s[k] for s in specs if k in s)
+        if len(vals) == 1:
+            s[k] = vals.pop()
+        else:
+            s[k] = sorted(list(vals))
+
+
 # our wrapper allowing to pass extra args to the batch environment ctors.
 def make_env(spec, **kwargs) -> gym.Env:
 
@@ -163,8 +177,10 @@ def make_batch_policy_fn(np_random, spec, env, test):
     spec.assert_is_scalar()
     flavor = spec["flavor"]
     alpha_sysid = spec["alpha_sysid"]
+    logstd_is_fn = spec["algorithm"] in ["sac"]
 
     activation = {"relu": tf.nn.relu, "selu": tf.nn.selu}[spec["activation"]]
+
 
     def f(ob_space, ac_space, ob_input, ob_traj_input, ac_traj_input):
         for space in (ob_space, ac_space):
@@ -180,10 +196,12 @@ def make_batch_policy_fn(np_random, spec, env, test):
         else:
             hid_sizes = [spec["hidden_sz"]] * spec["n_hidden"]
             embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
+            embed_hid_sizes = [embed_middle_size]
+            #embed_hid_sizes = []
             return SysIDPolicy(
                 ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
-                hid_sizes=hid_sizes, embed_hid_sizes=[embed_middle_size], activation=activation,
-                alpha_sysid=alpha_sysid,
+                hid_sizes=hid_sizes, embed_hid_sizes=embed_hid_sizes, activation=activation,
+                alpha_sysid=alpha_sysid, logstd_is_fn=logstd_is_fn,
                 embed_KL_weight=spec["embed_KL_weight"],
                 seed=np_random.randint(100),
                 test=test,
@@ -251,8 +269,10 @@ def train(spec: Spec, rootdir: str):
                 logdir=mydir
             )
         elif algo == "sac":
+            hid_sizes = [spec["hidden_sz"]] * spec["n_hidden"]
             trained_policy = algos.sac_sysid.learn(
                 sess, env.np_random, env, dim, policy_fn,
+                vf_hidden=hid_sizes,
                 learning_rate=spec["learning_rate"],
                 max_iters=spec["train_iters"],
                 logdir=mydir,
@@ -383,6 +403,16 @@ def ndarray_key(segs: List[dict], key: str) -> np.ndarray:
     return rews
 
 
+def flatfirst(x):
+    s = (-1,) + x.shape[2:]
+    return np.reshape(x, s)
+
+
+def flatlast(x):
+    s = x.shape[:-2] + (-1,)
+    return np.reshape(x, s)
+
+
 def mean_sysid_err(segs):
     err2s = [np.mean((seg["est_true"] - seg["est"]) ** 2, axis=-1) for seg in segs]
     return np.mean(np.concatenate(err2s, axis=0))
@@ -392,6 +422,31 @@ def dict_with(d, **kwargs):
     d2 = deepcopy(d)
     d2.update(**kwargs)
     return d2
+
+
+def group_by(specs: List[Spec], attached: list, key: str) -> List[Tuple[Any, Tuple[List[Spec], List[Any]]]]:
+    vals = sorted(set(iter_key(specs, key)))
+    def get(v):
+        filtered = [(s, a) for s, a in zip(specs, attached) if s[key] == v]
+        return tuple(zip(*filtered))
+    return [(v, get(v)) for v in vals]
+
+
+def tabulate(specs: List[Spec], attached: list, keys) -> Tuple[List[list], np.ndarray]:
+    assert len(specs) == len(attached)
+    if len(keys) == 0:
+        return [], np.stack(attached)
+    k = keys[0]
+    vals, tups = zip(*group_by(specs, attached, keys[0]))
+
+    def gen():
+        for val, (gspecs, gattached) in group_by(specs, attached, keys[0]):
+            yield tabulate(gspecs, gattached, keys[1:])
+
+    nextvals, arrs = [list(z) for z in zip(*gen())]
+    for nv in nextvals[1:]:
+        assert nv == nextvals[0]
+    return [vals] + nextvals[0], np.stack(arrs)
 
 
 def group_seeds(specs: List[Spec], attached: List[Any]) -> List[Tuple[Spec, List[Tuple[int, Any]]]]:
