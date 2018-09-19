@@ -33,6 +33,7 @@ def learn(
     env,               # environment w/ OpenAI Gym API
     dim,               # Dimension namedtuple
     policy_func,       # func takes (ob space, ac space, ob input placeholder)
+    vf_hidden,         # array of sizes of hidden layers in MLP learned value functions
     max_iters,         # stop after this many iters (defined by env.ep_len)
     logdir,            # directory to write csv logs
     tboard_dir,        # directory to write tensorboard summaries & graph
@@ -49,6 +50,12 @@ def learn(
 
     adam_epsilon=1e-8,
     ):
+
+    # set up so we do tensorboard and csv logging
+    logvars = []
+    def log_scalar(name, tfvar):
+        tf.summary.scalar(name, tfvar)
+        logvars.append((name, tfvar))
 
     # get dims
     N = env.N
@@ -67,26 +74,24 @@ def learn(
     with tf.variable_scope("pi", reuse=True):
         pi_nextob = policy_func(env.observation_space, env.action_space, nextob_ph, ob_traj_ph, ac_traj_ph)
 
-    # TODO param
-    vf_size = (256, 256, 256)
-
     # policy's probability of own stochastic action
     with tf.variable_scope("log_prob"):
         log_pi = pi.log_prob
 
     meanent = tf.reduce_mean(pi.entropy)
+    log_scalar("mean_entropy", meanent)
 
     # value function
     vf_in = pi.vf_input
     if not vf_grad_thru_embed:
         vf_in = tf.stop_gradient(vf_in)
 
-    vf = MLP("myvf", vf_in, vf_size, 1, tf.nn.relu)
+    vf = MLP("myvf", vf_in, vf_hidden, 1, tf.nn.relu)
 
     # double q functions - these ones are used "on-policy" in the vf loss
     q_in = tf.concat([vf_in, pi.ac_stochastic], axis=1, name="q_in")
-    qf1 = MLP("qf1", q_in, vf_size, 1, tf.nn.relu)
-    qf2 = MLP("qf2", q_in, vf_size, 1, tf.nn.relu)
+    qf1 = MLP("qf1", q_in, vf_hidden, 1, tf.nn.relu)
+    qf2 = MLP("qf2", q_in, vf_hidden, 1, tf.nn.relu)
     qf_min = tf.minimum(qf1.out, qf2.out, name="qf_min")
 
     if len(pi.extra_rewards) > 0:
@@ -103,23 +108,24 @@ def learn(
             tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
             if v in pol_vars])
         policy_loss = policy_kl_loss + pi_reg_losses + extra_losses
-        tf.summary.scalar("policy_kl_loss", policy_kl_loss)
-        #for t, name in zip(pi.extra_rewards, pi.extra_reward_names):
-            #tf.summary.scalar(name, t)
+        log_scalar("policy_kl_loss", policy_kl_loss)
+
+    for t, name in zip(pi.extra_rewards, pi.extra_reward_names):
+        log_scalar(name, t)
 
     # value function loss
     with tf.variable_scope("vf_loss"):
         vf_loss = 0.5 * tf.reduce_mean((vf.out - tf.stop_gradient(qf_min - log_pi))**2)
         vf_loss += extra_losses
-        tf.summary.scalar("vf_loss", vf_loss)
+        log_scalar("vf_loss", vf_loss)
 
     # same q functions, but for the off-policy TD training
     qtrain_in = tf.concat([vf_in, ac_ph], axis=1)
-    qf1_t = MLP("qf1", qtrain_in, vf_size, 1, tf.nn.relu, reuse=True)
-    qf2_t = MLP("qf2", qtrain_in, vf_size, 1, tf.nn.relu, reuse=True)
+    qf1_t = MLP("qf1", qtrain_in, vf_hidden, 1, tf.nn.relu, reuse=True)
+    qf2_t = MLP("qf2", qtrain_in, vf_hidden, 1, tf.nn.relu, reuse=True)
 
     # target (slow-moving) vf, used to update Q functions
-    vf_TDtarget = MLP("vf_target", pi_nextob.vf_input, vf_size, 1, tf.nn.relu)
+    vf_TDtarget = MLP("vf_target", pi_nextob.vf_input, vf_hidden, 1, tf.nn.relu)
 
     # q fn TD-target & losses
     with tf.variable_scope("TD_target"):
@@ -129,12 +135,12 @@ def learn(
     with tf.variable_scope("TD_loss1"):
         TD_loss1 = 0.5 * tf.reduce_mean((TD_target - qf1_t.out)**2)
         TD_loss1 += extra_losses
-        tf.summary.scalar("TD_loss1", TD_loss1)
+        log_scalar("TD_loss1", TD_loss1)
 
     with tf.variable_scope("TD_loss2"):
         TD_loss2 = 0.5 * tf.reduce_mean((TD_target - qf2_t.out)**2)
         TD_loss2 += extra_losses
-        tf.summary.scalar("TD_loss2", TD_loss2)
+        log_scalar("TD_loss2", TD_loss2)
 
 
     # training ops
@@ -156,7 +162,7 @@ def learn(
     if len(pi.estimator_vars) > 0:
         estimator_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="estimator_adam").minimize(
             pi.estimator_loss, var_list=pi.estimator_vars)
-        #tf.summary.scalar("estimator_loss", pi.estimator_loss)
+        #log_scalar("estimator_loss", pi.estimator_loss)
     else:
         estimator_opt_op = None
 
@@ -291,9 +297,17 @@ def learn(
                 count += 1
             logger.record_tabular("estimator_rmse", np.sqrt(sum_mserr / count))
 
-        # get one-step policy entropy
-        ent = sess.run(meanent, { pi.ob : ob_flat })
-        logger.record_tabular("entropy", ent)
+        # get all the summary variables
+        ot, at, rt, ot1 = replay_buf.sample(np_random, minibatch)
+        feed_dict = {
+            ob_ph: ot,
+            ac_ph: at,
+            rew_ph: rt[:,0],
+            nextob_ph: ot1,
+        }
+        logvals = sess.run([v for name, v in logvars], feed_dict)
+        for (name, var), val in zip(logvars, logvals):
+            logger.record_tabular(name, val)
 
         #logger.record_tabular("V_loss", V_loss_b)
         #logger.record_tabular("V_mean", np.mean(V_b.flat))
