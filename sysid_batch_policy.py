@@ -9,6 +9,9 @@ from sysid_utils import Dim, MLP, SquashedGaussianPolicy, minibatch_iter
 # no access to SysID values - domain randomization only
 BLIND = "blind"
 
+# policy has no access to SysID, but value fns do - for debugging only
+BLIND_POLICY_PLAIN_VF = "blind_policy_plain_vf"
+
 # MLP, access to true SysID values concatenated w/ obs
 PLAIN = "plain"
 
@@ -25,7 +28,7 @@ EMBED = "embed"
 
 class SysIDPolicy(object):
 
-    flavors = [BLIND, PLAIN, EXTRA, EMBED]
+    flavors = [BLIND, BLIND_POLICY_PLAIN_VF, PLAIN, EXTRA, EMBED]
 
     # set up the network
     # NOTE: due to normalization of SysID values and KL-regularization of embedding space,
@@ -34,6 +37,7 @@ class SysIDPolicy(object):
     # expects you to construct a variable scope for reusing, etc.
     def __init__(self, ob_input, ob_traj_input, ac_traj_input, dim,
                  flavor, hid_sizes, embed_hid_sizes, activation,
+                 logstd_is_fn,
                  alpha_sysid, embed_KL_weight, seed,
                  test):
 
@@ -66,7 +70,7 @@ class SysIDPolicy(object):
 
         # set up estimator.
         with tf.variable_scope("estimator"):
-            if flavor == BLIND:
+            if flavor in [BLIND, BLIND_POLICY_PLAIN_VF]:
                 self.estimator = EMPTY_TENSOR
             elif flavor in [PLAIN, EXTRA]:
                 self.estimator = sysid_convnet(trajs, dim.sysid)
@@ -80,8 +84,11 @@ class SysIDPolicy(object):
                 self.est_target = EMPTY_TENSOR
                 pol_input = None
                 vf_input = None
-                # TEMP DEBUG
-                #vf_input = sysid
+
+            elif flavor == BLIND_POLICY_PLAIN_VF:
+                self.est_target = EMPTY_TENSOR
+                pol_input = None
+                vf_input = sysid
 
             elif flavor == PLAIN:
                 self.est_target = sysid
@@ -93,7 +100,7 @@ class SysIDPolicy(object):
                 sysid_val = self.estimator if test else sysid
                 embedder = MLP(sysid_val, "sysid_processor",
                     embed_hid_sizes, dim.embed, activation=activation)
-                pol_input = embedder.out
+                pol_input = tf.nn.relu(embedder.out)
                 vf_input = sysid
 
             elif flavor == EMBED:
@@ -102,14 +109,16 @@ class SysIDPolicy(object):
                 embed_KL = tf.reduce_mean(kl_from_unit_normal(embedder))
                 self.extra_rewards.append(-embed_KL_weight * embed_KL)
                 self.extra_reward_names.append("neg_embed_KL")
-                pol_input = self.estimator if test else embedder
-                vf_input = embedder
+                pol_input = tf.nn.relu(self.estimator if test else embedder)
+                vf_input = tf.nn.relu(embedder)
                 tf.summary.histogram("embeddings", embedder)
                 tf.summary.scalar("embed_KL", embed_KL)
 
             pol_input = concat_notnone([ob, pol_input], axis=-1, name="pol_input")
             policy = SquashedGaussianPolicy("policy", pol_input,
-                hid_sizes, dim.ac, tf.nn.relu, seed=seed)
+                hid_sizes, dim.ac, tf.nn.relu,
+                logstd_is_fn=logstd_is_fn,
+                seed=seed)
             self.logs.append((tf.reduce_mean(policy.std), "mean_action_stddev"))
             self.ac_stochastic = policy.ac
             self.ac_mean = policy.mu
