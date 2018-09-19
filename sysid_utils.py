@@ -243,14 +243,22 @@ class MLP(object):
 
 class SquashedGaussianPolicy(object):
     def __init__(self, name, input, hid_sizes, output_size, activation,
-                 seed, reg=None, reuse=False):
+                 logstd_is_fn, seed, reg=None, reuse=False):
 
         self.name = name
-        self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
-        self.mlp.out *= 0.1
-        self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
-        self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
-        #self.logstd = -0.3 + 0.0 * self.mu
+
+        if logstd_is_fn:
+            self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
+            self.mlp.out *= 0.1
+            self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
+            self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
+        else:
+            self.mlp = MLP(name, input, hid_sizes, output_size, activation, reg, reuse)
+            self.mlp.out *= 0.1
+            self.mu = self.mlp.out
+            init_logstd = -0.3 * np.ones(output_size, dtype=np.float32)
+            self.logstd = tf.get_variable("logstd", initializer=init_logstd)
+
         self.std = tf.exp(self.logstd)
         self.pdf = tf.distributions.Normal(loc=self.mu, scale=self.std)
         self.raw_ac = self.pdf.sample(seed=seed)
