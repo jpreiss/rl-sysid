@@ -27,6 +27,8 @@ from sysid_utils import Dim, sysid_simple_generator
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf  # noqa 402
 
+mp_start_method_set = False
+
 
 # JSON schema for fully defining experiments
 experiment_params = {
@@ -319,7 +321,7 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None
     config.gpu_options.allow_growth = True
 
     mydir = os.path.join(rootdir, spec.dir())
-    print("mydir =", mydir)
+    # print("mydir =", mydir)
 
     with tf.Session(config=config, graph=g) as sess:
 
@@ -338,6 +340,7 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None
             save_path = override_ckpt_path
         else:
             save_path = os.path.join(mydir, Spec.saver_name)
+        # print("restoring from", save_path)
         saver.restore(sess, save_path)
 
         # while in some cases, you might set stochastic=False at test time
@@ -360,6 +363,11 @@ def grid(specs: List[Spec], fn, arg_fn, n_procs: int, always_spawn=False):
         return [fn(*arg_fn(spec)) for spec in specs]
     else:
         asyncs = []
+        # tf not "fork-safe"
+        global mp_start_method_set
+        if not mp_start_method_set:
+            multiprocessing.set_start_method("spawn")
+            mp_start_method_set = True
         pool = multiprocessing.Pool(processes=n_procs)
         for spec in specs:
             args = arg_fn(spec)
