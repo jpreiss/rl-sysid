@@ -175,8 +175,9 @@ def seg_flatten_batches(seg, keys=None):
                 "adv", "tdlamret", "vpred")
     for s in keys:
         sh = seg[s].shape
-        newshape = [sh[0] * sh[1]] + list(sh[2:])
-        seg[s] = np.reshape(seg[s], newshape)
+        if len(sh) > 1:
+            newshape = [sh[0] * sh[1]] + list(sh[2:])
+            seg[s] = np.reshape(seg[s], newshape)
 
 
 class ReplayBuffer(object):
