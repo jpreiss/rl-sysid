@@ -90,18 +90,18 @@
   Los Angeles, CA 90089\\
   \texttt{japreiss@usc.edu} \\
   %% examples of more authors
-  \And
-  Gaurav S. Sukhatme \\
-  Department of Computer Science\\
-  University of Southern California\\
-  Los Angeles, CA 90089\\
-  \texttt{gaurav@usc.edu} \\
   \AND
   Karol Hausman \\
   Google Brain \\
   1600 Amphitheatre Parkway\\
   Mountain View, CA 94043 \\
   \texttt{karolhausman@google.com} \\
+  \And
+  Gaurav S. Sukhatme \\
+  Department of Computer Science\\
+  University of Southern California\\
+  Los Angeles, CA 90089\\
+  \texttt{gaurav@usc.edu} \\
   %% Coauthor \\
   %% Affiliation \\
   %% Address \\
@@ -148,10 +148,10 @@ even when the differences are small~\citep{zhang-study-on-overfitting}.
 
 Such overfitting to the training environment is problematic as it does not allow to transfer trained policies, e.g. from simulation to reality. Training in a fast simulator and deploying on a real robot can save time,
 but since simulators cannot faithfully reproduce every detail of physical phenomena such as fluid dynamics, contacts or friction forces, policies must be able to generalize from the training to the test scenario.
-The problem of overfitting to the training environment is important beyond simulation-to-real transfer -- e.g., when training a policy in a lab and deploying it on mass-produced robots with manufacturing variations, different wear ant tear, etc. that will affect dynamics.
+The problem of overfitting to the training environment is important beyond simulation-to-real transfer -- e.g., when training a policy in a lab and deploying it on mass-produced robots with manufacturing variations, different wear and tear, etc. that will affect dynamics.
 
-Failure to generalize has become the subject attention in the RL community.
-One of the most successful attempts to improve generalization is domain randomization of dynamics parameters~\citep{antonova-pivoting-corr17, zhu-RL-IL-diverse}
+Failure to generalize has become the subject of attention in the RL community.
+One of the most successful attempts to improve generalization is via domain randomization of dynamics parameters~\citep{antonova-pivoting-corr17, zhu-RL-IL-diverse}
 or visual attributes~\citep{sadeghi-cad2rl-rss17,tobin-domainrand-arxiv17,james-domain-xfer} during training, such that the learned policy is invariant to those changes in the environment.
 Although domain randomization has demonstrated a surprisingly good generalization ability,
 it is inherently limited by its main assumption that a single policy performs sufficiently well in all domains.
@@ -191,7 +191,7 @@ in which the parameters of the dynamics and/or observations are randomized durin
 but the final policy does not explicitly perform system identification at test time.
 %
 Randomization of dynamics parameters in simulation has been shown to increase generalization ability~\citep{antonova-pivoting-corr17, zhu-RL-IL-diverse}.
-Random textures and colors in the visual input has been used for successful sim-to-real transfer
+Random textures and colors in the visual input have been used for successful sim-to-real transfer
 for indoor quadrotor navigation~\citep{sadeghi-cad2rl-rss17}
 and simple manipulation tasks~\citep{tobin-domainrand-arxiv17,james-domain-xfer}.
 These methods focus on the visual part of the problem and use higher-level control inputs
@@ -224,7 +224,7 @@ optimizing the policy to adapt to the test environment in a single gradient desc
 %
 Visual differences between training and a specific test environment have been addressed
 using generative adversarial networks (GANs)~\citep{bousmalis-domain-gan-cvpr17}
-or by learning a domain-invariant feature space~\citep{bousmalis-domainseparation-nips16}.
+or by learning a feature space that is invariant to differences between the two domains~\citep{bousmalis-domainseparation-nips16}.
 %
 %\citet{christiano-deep-inverse-dynamics-corr16} learn an inverse dynamics model and use the trained policy in the simulator to select desired states.
 %\TODO{characterize better.}
@@ -247,9 +247,9 @@ and an online system identification module to estimate them.
 We observe that estimating the true dynamics parameters requires more work than needed --
 one can instead learn to map the dynamics parameters into an embedding space
 that is more useful for the policy, as well as being easier to estimate.
-~\citet{peng-dynamics-randomization-corr17} make a similar observation and use a recurrent policy architecture.
-A recurrent architecture is able to extract information about the environment in its internal state without imposing any particular structure on the information that is extracted.
-By comparison, our framework makes it possible to modify the training reward such that the model is explicitly encouraged to behave in a manner that makes the parameters easily observable.
+~\citet{peng-dynamics-randomization-corr17} make a similar observation and develop an approach based on a recurrent neural network policy.
+A recurrent architecture is able to extract and store information about the environment in its internal state without imposing any particular structure on the information that is extracted.
+Our approach aims to achieve the same goal without using recurrent policies, which are generally considered more difficult to train.~\TODO{cite}
 
 
 
@@ -441,9 +441,9 @@ and the estimated embeddings are input directly to the policy.
 In this section, we illustrate the desirable properties of the learned embedding space $\latent$
 and compare the performance of our architecture (denoted \embed) against several baselines:
 \begin{enumerate}
-\item \blind: A ``blind'' policy that has no access to $s_D$ in any form, representing the domain randomization.
-\item \plain: A policy conditioned on the true system identification parameters $s_D$ instead of the learned embedding, similar to~\citet{yu-up-osi-rss17}, but with an extra fully connected layer between $s_D$ and $\pi$, such that the total number of policy parameters is equal to \embed.
-$\idfn$ is still trained to estimate $s_D$.
+\item \blind{}: A ``blind'' policy that has no access to $s_D$ in any form. This is the domain randomization approach.
+\item \plain{}: A policy conditioned on the true system identification parameters $s_D$ instead of the learned embedding, similar to~\citet{yu-up-osi-rss17}
+\item \extra{}: Like \plain{}, but with an extra fully connected layer between $s_D$ and $\pi$, such that the total number of policy parameters is equal to \embed.  $\idfn$ is still trained to estimate $s_D$.
 %\item \traj: A policy where the state-action trajectory is input through a 1D convolutional network (identical to the SysID network) in training, without any condition that this network should estimate $\cS_D$ or an embedding.
 \end{enumerate}
 The structure of our experimental setup is illustrated in~\figref{fig:overview}.
@@ -460,7 +460,7 @@ The point-mass environment serves as a ``simplest possible'' scenario to demonst
 The low dimensionality of this system allow us to visualize the properties of the learned embedding more easily.
 The state space $\cS = (p \in \R^2, v \in \R^2)$ is position and velocity of the unit mass in 2D.
 The action space $\cA = [-1, 1]^2$ is a bounded force vector.
-The system identification space $\cS_D$ is a gain factor $g \in \pm[0.175, 1.75]$.
+The system identification space $\cS_D$ is a gain factor $g \in \pm[0.175, 1.75]$,
 such that the true force applied to the mass is $g \cdot a$.
 The system dynamics are:
 \begin{equation}\begin{split}
@@ -609,7 +609,7 @@ and gear ratios of six rotary actuators.
 In total, 37 parameters are randomized.
 The embedding space $\latent$ is chosen to be 8-dimensional.
 Each end of the joint range is shifted by $\pm 0.3$ radians.
-All other parameters are multiplied by a ratio log-uniformly distributed in the range $[\beta^{-1}, \beta]$ with $\beta = 1.$.
+All other parameters are multiplied by a ratio log-uniformly distributed in the range $[\beta^{-1}, \beta]$ with $\beta = 1.75$.
 
 Due to the architecture of the MuJoCo physics simulator used in this environment~\citep{todorov-mujoco},
 it is not practical to sample new random dynamics parameters $s_D$ for each training iteration.
@@ -635,7 +635,7 @@ pulling it away from the undesirable local optimum.
 \begin{table}[ht]
 \centering
 \begin{tabular}{l l l l l l l}
-Type & $\alpha_{id}$ & $\mu_{train}$ & $\sigma_{train}$& $\mu_{test}$ & $\sigma_{test}$ & generalization error \\
+Type & $\alpha_{id}$ & $\mu_{train}$ & $\sigma_{train}$& $\mu_{test}$ & $\sigma_{test}$ & $\mu_{test} - \mu_{train}$ \\
 \hline
 \embed{} & 0 & 336.0 & 167.7 & 266.9 & 145.8 & -69.1 \\
 \embed{} & 0.01 & 363.2 & 170.5 & 288.6 & 145.5 & -74.6 \\
@@ -644,12 +644,13 @@ Type & $\alpha_{id}$ & $\mu_{train}$ & $\sigma_{train}$& $\mu_{test}$ & $\sigma_
 \blind{} & N/A & 266.1 & 156.7 & 244.1 & 140.6 & -22.0
 \end{tabular}
 
-\vspace{0.4cm} \\
+\vspace{0.4cm}
 
 \caption{
 Training and test rewards in half-cheetah environment for \blind{}, \extra{}, and \embed{} policies.
 Learned embedding space gives significant improvement.
 Observability reward $\alpha$ gives moderate improvement.
+\TODO{introduce / explain the generalization error (test - train) better.}
 }
 \label{cheetah}
 \end{table}
