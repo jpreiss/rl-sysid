@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import typing
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, Set
 
 import numpy as np
 import scipy as sp
@@ -135,7 +135,8 @@ def multispec_product(spec: Spec) -> List[Spec]:
 def multispec_union(specs: List[Spec]) -> Spec:
     for spec in specs:
         spec.assert_is_scalar()
-    keys = set().union(s.keys() for s in specs)
+    keys: Set[str] = set()
+    keys = keys.union(*it.chain(list(s.keys()) for s in specs))
     s = {}
     for k in keys:
         vals = set(s[k] for s in specs if k in s)
@@ -143,6 +144,7 @@ def multispec_union(specs: List[Spec]) -> Spec:
             s[k] = vals.pop()
         else:
             s[k] = sorted(list(vals))
+    return Spec(s)
 
 
 # our wrapper allowing to pass extra args to the batch environment ctors.
@@ -172,7 +174,8 @@ def get_dim(spec: Spec, env: gym.Env) -> Dim:
 
 
 # for compatibility with OpenAI Baselines learning algorithms
-def make_batch_policy_fn(np_random, spec, env, test):
+def make_batch_policy_fn(np_random: np.random.RandomState,
+    spec: Spec, dim: Dim, test: bool):
 
     spec.assert_is_scalar()
     flavor = spec["flavor"]
@@ -186,7 +189,6 @@ def make_batch_policy_fn(np_random, spec, env, test):
         for space in (ob_space, ac_space):
             assert isinstance(space, gym.spaces.Box)
             assert len(space.shape) == 1
-        dim = get_dim(spec, env)
         if spec["algorithm"] in ["qtopt"]:
             raise NotImplementedError("adapt to not passing in name anymore.")
             return SysIDQ(
@@ -225,7 +227,7 @@ def train(spec: Spec, rootdir: str):
     print("mydir =", mydir)
     os.makedirs(mydir, exist_ok=True)
 
-    policy_fn = make_batch_policy_fn(var_init_npr, spec, env, test=False)
+    policy_fn = make_batch_policy_fn(var_init_npr, spec, dim, test=False)
 
     g = tf.Graph()
     g.seed = seed
@@ -298,7 +300,7 @@ def train(spec: Spec, rootdir: str):
 
 # load the policy and test, saves pickled array of "seg" dictionaries
 # TODO factor out some of the common init code w/ train()
-def test(spec: Spec, rootdir: str, n_sysid_samples: int):
+def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None, infer_sysid=True):
 
     spec.assert_is_scalar()
 
@@ -326,22 +328,25 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int):
         ob_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ob), "ob_traj")
         ac_traj_ph = tf.placeholder(tf.float32, (None, dim.window, dim.ac), "ac_traj")
 
-        alpha_sysid = 0  # doesn't matter at test time
         with tf.variable_scope("pi"):
-            pi = make_batch_policy_fn(var_init_npr, spec, env, test=True)(
+            pi = make_batch_policy_fn(var_init_npr, spec, dim, test=infer_sysid)(
                 env.observation_space, env.action_space,
                 ob_ph, ob_traj_ph, ac_traj_ph)
 
         saver = tf.train.Saver()
-        save_path = os.path.join(mydir, Spec.saver_name)
+        if override_ckpt_path is not None:
+            save_path = override_ckpt_path
+        else:
+            save_path = os.path.join(mydir, Spec.saver_name)
         saver.restore(sess, save_path)
 
         # while in some cases, you might set stochastic=False at test time
         # to get the "best" actions, for SysID stochasticity could be
         # an important / desired part of the policy
-        seg_gen = sysid_simple_generator(sess, pi, env, stochastic=True, test=True)
+        seg_gen = sysid_simple_generator(sess, pi, env, stochastic=True, test=infer_sysid)
         segs = list(it.islice(seg_gen, n_sysid_samples))
 
+    os.makedirs(mydir, exist_ok=True)
     with open(os.path.join(mydir, Spec.test_pickle_name), "wb") as f:
         pickle.dump(segs, f, protocol=4)
 
@@ -454,7 +459,7 @@ def group_seeds(specs: List[Spec], attached: List[Any]) -> List[Tuple[Spec, List
     if len(specs) == 0:
         specs = multispec_product(specs[0])
 
-    cores = []
+    cores: List[Spec] = []
     for s in specs:
         s2 = dict_with(s, seed=None, directory=None)
         if s2 in cores:

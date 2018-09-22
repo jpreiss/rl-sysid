@@ -30,6 +30,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
     # Initialize history arrays
     obs = np.zeros((horizon, N, dim.ob_concat))
     acs = np.zeros((horizon, N, dim.ac))
+    logps = np.zeros((horizon, N))
     embeds = np.zeros((horizon, N, pi.est_target.shape[-1]))
     rews = np.zeros((horizon, N))
     # rolling window, starting with zeros
@@ -72,7 +73,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
                     pi.ob_traj : ob_trajs[step],
                     pi.ac_traj : ac_trajs[step],
                 }}
-            ac, embed = sess.run([target, pi.est_target], feed)
+            ac, embed, logp = sess.run([target, pi.est_target, pi.log_prob], feed)
 
             # epsilon-greedy exploration (TODO: pass in params)
             #rand_acts = np.random.uniform(-1.0, 1.0, size=ac.shape)
@@ -81,6 +82,8 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             #ac[greedy] = rand_acts[greedy]
 
             acs[step,:,:] = ac
+            assert logp.size == N
+            logps[step,:] = logp
             embeds[step,:,:] = embed
 
             if step < horizon - 1:
@@ -137,7 +140,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
 
         # yield the batch to the RL algorithm
         yield {
-            "ob" : obs, "ac" : acs,
+            "ob" : obs, "ac" : acs, "logp" : logps,
             "rew" : total_rews, "task_rews" : rews,
             "ob_traj" : ob_trajs, "ac_traj" : ac_trajs,
             "ep_rews" : ep_rews, "ep_lens" : horizon + 0 * ep_rews,
@@ -165,11 +168,16 @@ def add_vtarg_and_adv(seg, gamma, lam):
 
 
 # flattens arrays that are (horizon, N, ...) shape into (horizon * N, ...)
-def seg_flatten_batches(seg):
-    for s in ("ob", "ac", "task_rews", "ob_traj", "ac_traj", "est_true", "adv", "tdlamret", "vpred"):
+def seg_flatten_batches(seg, keys=None):
+    if keys is None:
+        keys = ("ob", "ac", "logp", "task_rews",
+                "ob_traj", "ac_traj", "est_true",
+                "adv", "tdlamret", "vpred")
+    for s in keys:
         sh = seg[s].shape
-        newshape = [sh[0] * sh[1]] + list(sh[2:])
-        seg[s] = np.reshape(seg[s], newshape)
+        if len(sh) > 1:
+            newshape = [sh[0] * sh[1]] + list(sh[2:])
+            seg[s] = np.reshape(seg[s], newshape)
 
 
 class ReplayBuffer(object):

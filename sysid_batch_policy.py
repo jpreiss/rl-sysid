@@ -153,7 +153,7 @@ class SysIDPolicy(object):
 
 
     def logp(self, actions):
-        return self.pdf.logp(actions)
+        return self.pdf.logp(0.9999 * actions)
 
 
     # given the ob/ac trajectories, estimates:
