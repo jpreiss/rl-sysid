@@ -1,0 +1,83 @@
+\documentclass[12pt]{article}
+
+\input{/home/james/tex/preamble.tex}
+
+\title{SysID behavior cloning notes}
+\author{James A. Preiss}
+\date{\monthyear \today}
+
+\newcommand{\cID}{\mathcal{ID}}
+\newcommand{\pibar}{\overline{\pi_\theta}}
+
+\begin{document}
+
+\section{Behavior cloning}
+Let $\cID \subseteq \R^{ID}$ denote the space of dynamics parameters,
+$p_{ID}(id)$ the probability distribution from which these parameters are sampled.
+We seek to learn a policy $\pi^\star(a|s,id)$ maximizing the objective
+\begin{equation}
+\pi^\star = \argmax \E_{id \sim p_{ID}, \tau \sim (\pi, id)} \left[
+\sum_{t=0}^H \gamma^t r(s,a)
+%D_{KL} \left(\pi_n(\cdot|s) \parallel \pibar(\cdot|s, id_n)\right)
+\right]
+\label{main-objective}
+\end{equation}
+where the notation $\tau \sim (\pi, id)$ indicates that the state $s$ and action $a$
+are distributed according to the policy $\pi$ and the state visitation distribtion
+induced by executing the policy $\pi$ under the dynamics $p(s'|s,a,id)$ with the specific parameter value $id$.
+
+We assume the ability to sample from $p_{ID}$
+and access to a simulator that can simulate $p(s'|s,a,id)$ for any valid value of $id$.
+The objective~\eqref{main-objective} can then be optimized using standard reinforcement learning algorithms
+by treating the parameter vector $id$ as part of the policy's state input
+and training in a set of simulation environments sampled from $p_{ID}$.
+However, in practice we observe that it is hard to learn $\pi^\star$,
+and the average reward achieved by a policy trained in this manner
+is significantly lower than the average reward achieved
+over a set of policies, each optimized for a particular value of the dynamics parameters.
+
+Motivated by this observation, we propose to use such a set of single-environment ``expert'' policies
+to initialize our multi-environment policy via a supervised behavior cloning approach.
+We sample $N \in \N$ parameter vectors $[id_1,\ \dots,\ id_N]$ from $p_{ID}$
+and train an expert policy $\pi_n(a|s)$ for each parameterized environment.
+For each environment, we collect an expert rollout dataset of $M$ trajectories:
+\begin{equation}
+\cE_n = \left\{ \tau_n^{(i)} \right\}_{i=1}^M,\ \tau_n^{(i)} = \left[(s_1, a_1, p_1)^{(i)},\ \dots,\ (s_H, a_H, p_H)^{(i)}\right]
+\end{equation}
+where $p_t^{(i)} = log \pi_n(a_t^{(i)}|s_t^{(i)})$, the log-likelihood of $\pi_n$ for the specific action taken during the rollout.
+
+We then train a cloned policy $\pibar(a|s, id)$, parameterized by $\theta$,
+with the goal of imitating each expert's observed behavior.
+We train $\pibar$ to minimize the cloning loss
+\begin{equation}\begin{split}
+J(\theta)
+&= \recip{N} \sum_{n=1}^N \E_{\tau \sim (\pi_n, id_n)} \left[
+D_{KL} \left(\pi_n(\cdot|s) \parallel \pibar(\cdot|s, id_n)\right)
+\right] \\
+&= \recip{N} \sum_{n=1}^N \E_{\tau \sim (\pi_n, id_n)} \left[
+\E_{a \sim \pi_n(a|s)}
+\log \frac{\pi_n(a|s)}{\pibar(a|s,id_n}
+\right].
+\label{cloning-loss}
+\end{split}\end{equation}
+Note that the cloning loss~\eqref{cloning-loss} is a ``myopic'' objective
+that only considers the distribution of actions at a given state,
+rather than the overall state visitation distribution induced by $\pibar$.
+This can lead to the ``covariate shift'' issue where the policy visits states that were not seen by the expert policies,
+causing poor actions because there is no training data to imitate.
+However, we only aim to use this cloned policy as an initialization for further refinement using reinforcement learning.
+
+The expectations in~\eqref{cloning-loss} can be approximated empirically using the expert rollouts:
+\begin{equation}\begin{split}
+J(\theta)
+&\approx
+\recip{NMT} \sum_{n=1}^N \sum_{s,a,p \in \cE_n} \left( p_t^{(i)} - \log \pibar(a_t^{(i)}|s_t^{(i)},id_n) \right)
+\label{cloning-loss-empirical}
+\end{split}\end{equation}
+
+
+
+\bibliographystyle{plainnat}
+\bibliography{/home/james/tex/bibliography}{}
+
+\end{document}
