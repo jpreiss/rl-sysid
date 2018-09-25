@@ -39,16 +39,15 @@ class SysIDPolicy(object):
                  flavor, hid_sizes, embed_hid_sizes, activation,
                  logstd_is_fn,
                  alpha_sysid, embed_KL_weight, seed,
-                 test):
+                 test,
+                 load_dir=None):
 
         if flavor not in SysIDPolicy.flavors:
             raise ValueError(f"flavor '{flavor}' does not exist")
 
-        if test:
-            #print("constructing policy using test input.")
-            pass
 
         # we store the flavor here for logging purposes, but RL algos should never read it
+        self.load_dir = load_dir
         self.flavor = flavor
         self.dim = dim
         self.alpha_sysid = alpha_sysid
@@ -122,6 +121,7 @@ class SysIDPolicy(object):
             self.logs.append((tf.reduce_mean(policy.std), "mean_action_stddev"))
             self.ac_stochastic = policy.ac
             self.ac_mean = policy.mu
+            self.ac_logstd = policy.logstd
             self.reg_loss = policy.reg_loss
             self.entropy = policy.entropy
             self.pdf = policy
@@ -150,6 +150,19 @@ class SysIDPolicy(object):
         self.estimator_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, estimator_scope)
         self.all_vars = self.policy_vars + self.estimator_vars
+
+
+    def sess_init(self, sess):
+        if self.load_dir is not None:
+            self.restore(sess, self.load_dir)
+
+    def save(self, sess, path):
+        saver = tf.train.Saver()
+        saver.save(sess, path)
+
+    def restore(self, sess, path):
+        saver = tf.train.Saver()
+        saver.restore(sess, path)
 
 
     def logp(self, actions):

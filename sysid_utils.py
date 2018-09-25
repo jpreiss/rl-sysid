@@ -30,6 +30,8 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
     # Initialize history arrays
     obs = np.zeros((horizon, N, dim.ob_concat))
     acs = np.zeros((horizon, N, dim.ac))
+    acmeans = np.zeros((horizon, N, dim.ac))
+    aclogstds = np.zeros((horizon, N, dim.ac))
     logps = np.zeros((horizon, N))
     embeds = np.zeros((horizon, N, pi.est_target.shape[-1]))
     rews = np.zeros((horizon, N))
@@ -73,7 +75,9 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
                     pi.ob_traj : ob_trajs[step],
                     pi.ac_traj : ac_trajs[step],
                 }}
-            ac, embed, logp = sess.run([target, pi.est_target, pi.log_prob], feed)
+            # dat tight coupling
+            ac, embed, logp, acmean, aclogstd = sess.run([
+                target, pi.est_target, pi.log_prob, pi.ac_mean, pi.ac_logstd], feed)
 
             # epsilon-greedy exploration (TODO: pass in params)
             #rand_acts = np.random.uniform(-1.0, 1.0, size=ac.shape)
@@ -82,6 +86,8 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             #ac[greedy] = rand_acts[greedy]
 
             acs[step,:,:] = ac
+            acmeans[step,:,:] = acmean
+            aclogstds[step,:,:] = aclogstd
             assert logp.size == N
             logps[step,:] = logp
             embeds[step,:,:] = embed
@@ -140,7 +146,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
 
         # yield the batch to the RL algorithm
         yield {
-            "ob" : obs, "ac" : acs, "logp" : logps,
+            "ob" : obs, "ac" : acs, "logp" : logps, "acmean": acmeans, "aclogstd": aclogstds,
             "rew" : total_rews, "task_rews" : rews,
             "ob_traj" : ob_trajs, "ac_traj" : ac_trajs,
             "ep_rews" : ep_rews, "ep_lens" : horizon + 0 * ep_rews,
@@ -259,7 +265,7 @@ class SquashedGaussianPolicy(object):
             self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
             self.mlp.out *= 0.1
             self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
-            self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
+            self.logstd = tf.clip_by_value(logstd, -2.0, 2.0)
         else:
             self.mlp = MLP(name, input, hid_sizes, output_size, activation, reg, reuse)
             self.mlp.out *= 0.1

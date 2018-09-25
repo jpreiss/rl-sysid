@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import typing
-from typing import Any, Callable, Dict, List, Tuple, Set
+from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 
 import numpy as np
 import scipy as sp
@@ -26,8 +26,6 @@ from sysid_utils import Dim, sysid_simple_generator
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf  # noqa 402
-
-mp_start_method_set = False
 
 
 # JSON schema for fully defining experiments
@@ -92,6 +90,13 @@ class Spec(dict):
         for k, v in self.items():
             assert not type(v) == list, f"spec[{k}] is not scalar"
 
+    def strip_singleton_lists(self):
+        s = self.copy()
+        for k, v in s.items():
+            if type(v) == list and len(v) == 1:
+                s[k] = v[0]
+        return Spec(s)
+
     def dir(self):
         return self["directory"]
 
@@ -99,6 +104,11 @@ class Spec(dict):
     json_name = "config.json"
     saver_name = "trained_model.ckpt"
     test_pickle_name = "test_results.pickle"
+
+
+MultiSpecDir = typing.NewType("MultiSpecDir", str)
+SaverDir = typing.NewType("SaverDir", str)
+TestPath = typing.NewType("TestPath", str)
 
 
 # default multispec
@@ -177,7 +187,7 @@ def get_dim(spec: Spec, env: gym.Env) -> Dim:
 
 # for compatibility with OpenAI Baselines learning algorithms
 def make_batch_policy_fn(np_random: np.random.RandomState,
-    spec: Spec, dim: Dim, test: bool):
+    spec: Spec, dim: Dim, test: bool, load_dir: Optional[SaverDir]=None):
 
     spec.assert_is_scalar()
     flavor = spec["flavor"]
@@ -185,7 +195,6 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
     logstd_is_fn = spec["algorithm"] in ["sac"]
 
     activation = {"relu": tf.nn.relu, "selu": tf.nn.selu}[spec["activation"]]
-
 
     def f(ob_space, ac_space, ob_input, ob_traj_input, ac_traj_input):
         for space in (ob_space, ac_space):
@@ -209,27 +218,27 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
                 embed_KL_weight=spec["embed_KL_weight"],
                 seed=np_random.randint(100),
                 test=test,
+                load_dir=load_dir,
             )
     return f
 
 
-def train(spec: Spec, rootdir: str):
+def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
 
     spec.assert_is_scalar()
 
     env = make_env(spec)
 
-    seed = spec["seed"]
+    seed = int(spec["seed"])
     env.seed(seed)
     var_init_npr = np.random.RandomState(seed)
 
     dim = get_dim(spec, env)
 
-    mydir = os.path.join(rootdir, spec.dir())
-    print("mydir =", mydir)
-    os.makedirs(mydir, exist_ok=True)
+    policy_fn = make_batch_policy_fn(var_init_npr, spec, dim, test=False, load_dir=load_dir)
 
-    policy_fn = make_batch_policy_fn(var_init_npr, spec, dim, test=False)
+    mydir, _ = os.path.split(save_dir)
+    os.makedirs(mydir, exist_ok=True)
 
     g = tf.Graph()
     g.seed = seed
@@ -273,7 +282,12 @@ def train(spec: Spec, rootdir: str):
                 logdir=mydir
             )
         elif algo == "sac":
+
+            is_finetune = load_dir is not None
+            explore_steps = int(1e5) if is_finetune else spec["init_explore_steps"]
+
             hid_sizes = [spec["hidden_sz"]] * spec["n_hidden"]
+
             trained_policy = algos.sac_sysid.learn(
                 sess, env.np_random, env, dim, policy_fn,
                 vf_hidden=hid_sizes,
@@ -281,7 +295,8 @@ def train(spec: Spec, rootdir: str):
                 max_iters=spec["train_iters"],
                 logdir=mydir,
                 tboard_dir=mydir,
-                init_explore_steps=spec["init_explore_steps"],
+                init_explore_steps=explore_steps,
+                is_finetune=is_finetune,
                 n_train_repeat=spec["n_train_repeat"],
                 buf_len=spec["buf_len"],
                 minibatch=spec["minibatch"],
@@ -293,23 +308,20 @@ def train(spec: Spec, rootdir: str):
         else:
             assert False, "invalid choice of RL algorithm: " + algo
 
-        ckpt_path = os.path.join(mydir, Spec.saver_name)
-        saver = tf.train.Saver()
-        saver.save(sess, ckpt_path)
+        trained_policy.save(sess, save_dir)
 
     env.close()
 
 
-# load the policy and test, saves pickled array of "seg" dictionaries
-# TODO factor out some of the common init code w/ train()
-def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None, infer_sysid=True):
+def test(spec: Spec, load_dir: SaverDir, save_path: TestPath,
+    n_sysid_samples: int, infer_sysid: bool=True):
 
     spec.assert_is_scalar()
 
     tweak = spec["test_tweak"] if spec["test_mode"] == "tweak" else 0.0
     env = make_env(spec, tweak=tweak)
 
-    seed = spec["seed"]
+    seed = int(spec["seed"])
     if spec["test_mode"] == "resample":
         seed += 100
     env.seed(seed)
@@ -319,9 +331,6 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None
     g.seed = seed
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-
-    mydir = os.path.join(rootdir, spec.dir())
-    # print("mydir =", mydir)
 
     with tf.Session(config=config, graph=g) as sess:
 
@@ -335,13 +344,7 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None
                 env.observation_space, env.action_space,
                 ob_ph, ob_traj_ph, ac_traj_ph)
 
-        saver = tf.train.Saver()
-        if override_ckpt_path is not None:
-            save_path = override_ckpt_path
-        else:
-            save_path = os.path.join(mydir, Spec.saver_name)
-        # print("restoring from", save_path)
-        saver.restore(sess, save_path)
+        pi.restore(sess, load_dir)
 
         # while in some cases, you might set stochastic=False at test time
         # to get the "best" actions, for SysID stochasticity could be
@@ -349,8 +352,9 @@ def test(spec: Spec, rootdir: str, n_sysid_samples: int, override_ckpt_path=None
         seg_gen = sysid_simple_generator(sess, pi, env, stochastic=True, test=infer_sysid)
         segs = list(it.islice(seg_gen, n_sysid_samples))
 
+    mydir, _ = os.path.split(save_path)
     os.makedirs(mydir, exist_ok=True)
-    with open(os.path.join(mydir, Spec.test_pickle_name), "wb") as f:
+    with open(save_path, "wb") as f:
         pickle.dump(segs, f, protocol=4)
 
 
@@ -363,11 +367,6 @@ def grid(specs: List[Spec], fn, arg_fn, n_procs: int, always_spawn=False):
         return [fn(*arg_fn(spec)) for spec in specs]
     else:
         asyncs = []
-        # tf not "fork-safe"
-        global mp_start_method_set
-        if not mp_start_method_set:
-            multiprocessing.set_start_method("spawn")
-            mp_start_method_set = True
         pool = multiprocessing.Pool(processes=n_procs)
         for spec in specs:
             args = arg_fn(spec)
@@ -377,27 +376,34 @@ def grid(specs: List[Spec], fn, arg_fn, n_procs: int, always_spawn=False):
         return results
 
 
-def train_multispec(spec: Spec, rootdir: str, n_procs: int):
+def train_multispec(spec: Spec, rootdir: MultiSpecDir, n_procs: int, load_dir: Optional[SaverDir]=None):
+
     specs = multispec_product(spec)
     # tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
     # print("Child TensorBoard process:", tboard_process.pid)
     try:
         def arg_fn(spec):
-            return spec, rootdir
+            save_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
+            return spec, rootdir, load_dir
         grid(specs, train, arg_fn, n_procs)
     finally:
         # tboard_process.kill()
         pass
 
 
-def test_multispec(multispec, rootdir, n_sysid_samples: int, n_procs: int):
+def test_multispec(multispec, rootdir: MultiSpecDir, n_sysid_samples: int, n_procs: int, load_override: Optional[SaverDir]=None):
     def arg_fn(spec):
-        return spec, rootdir, n_sysid_samples
+        if load_override is not None:
+            load_dir = load_override
+        else:
+            load_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
+        save_path = os.path.join(rootdir, spec.dir(), Spec.test_pickle_name)
+        return spec, load_dir, save_path, n_sysid_samples
     specs = multispec_product(multispec)
     grid(specs, test, arg_fn, n_procs)
 
 
-def load_test_results(multispec, rootdir):
+def load_test_results(multispec, rootdir: MultiSpecDir) -> List[List[dict]]:
     def gen():
         for spec in multispec_product(multispec):
             path = os.path.join(rootdir, spec.dir(), Spec.test_pickle_name)
@@ -565,8 +571,7 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
 
     seeddir = os.path.join(mydir, str(seed))
     ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
-    saver = tf.train.Saver()
-    saver.restore(sess, ckpt_path)
+    pi.restore(sess, ckpt_path)
 
     assert env.sysid_dim == len(env.sysid_names)
     N = 1000
@@ -600,8 +605,7 @@ def sysids_to_embeddings(sess, env_id, seed, mydir):
 
     seeddir = os.path.join(mydir, str(seed))
     ckpt_path = os.path.join(seeddir, 'trained_model.ckpt')
-    saver = tf.train.Saver()
-    saver.restore(sess, ckpt_path)
+    pi.restore(sess, ckpt_path)
 
     if env.sysid_dim == 1:
         N = 1000

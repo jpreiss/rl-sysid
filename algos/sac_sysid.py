@@ -23,6 +23,12 @@ class UniformPolicy(object):
         N = tf.shape(self.ob)[0]
         self.ac_stochastic = dist.sample(N, seed=seed)
 
+        # TODO this is not the proper log prob of multi-var uniform dist!
+        self.log_prob = tf.reduce_mean(dist.log_prob(self.ac_stochastic), axis=1)
+        self.ac_mean = dist.mean()
+        self.ac_logstd = tf.log(dist.stddev())
+
+
     def estimate_sysid(self, *args):
         raise NotImplementedError
 
@@ -40,6 +46,9 @@ def learn(
 
     learning_rate,     # ...
     init_explore_steps,# explore this many steps with random policy at start
+
+    is_finetune,
+
     n_train_repeat,    # do this many gradient steps on replay buf each step
     buf_len,           # size of replay buf
     minibatch,         # size of per-step optimization minibatch
@@ -73,6 +82,9 @@ def learn(
         pi = policy_func(env.observation_space, env.action_space, ob_ph, ob_traj_ph, ac_traj_ph)
     with tf.variable_scope("pi", reuse=True):
         pi_nextob = policy_func(env.observation_space, env.action_space, nextob_ph, ob_traj_ph, ac_traj_ph)
+
+    pi.sess_init(sess)
+    pi_nextob.sess_init(sess)
 
     # policy's probability of own stochastic action
     with tf.variable_scope("log_prob"):
@@ -157,6 +169,7 @@ def learn(
         TD_loss2, var_list=qf2.vars)
 
     train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
+    vf_train_ops = train_ops[1:]
 
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
@@ -188,7 +201,11 @@ def learn(
     sess.run(vf_target_moving_avg_ops)
     #sess.run([tf.assign(vtarg, v) for vtarg, v in zip(V_target.vars, V.vars)])
 
-    do_train = False
+    TRAIN_NONE = 0
+    TRAIN_VF = 1
+    TRAIN_ALL = 2
+    do_train = TRAIN_NONE
+
     n_trains = [0] # get ref semantics in callback closure. lol @python
 
     # update the policy every time step for high sample efficiency
@@ -202,8 +219,10 @@ def learn(
         # add all agents' steps to replay buffer
         replay_buf.add_batch(ob, ac, rew, ob_next)
 
-        if not do_train:
+        if do_train == TRAIN_NONE:
             return
+
+        ops = vf_train_ops if do_train == TRAIN_VF else train_ops
 
         # gradient step
         for i in range(n_train_repeat):
@@ -215,7 +234,7 @@ def learn(
                 nextob_ph: ot1,
             }
             # TODO get diagnostics
-            sess.run(train_ops, feed_dict)
+            sess.run(ops, feed_dict)
             sess.run(vf_target_moving_avg_ops)
 
             if (writer is not None) and (i == 0) and (n_trains[0] % 1e3 == 0):
@@ -228,12 +247,17 @@ def learn(
     explore_epochs = int(np.ceil(float(init_explore_steps) / (N * env.ep_len)))
     #print(f"random exploration stage: {explore_epochs} epochs...")
 
-    policy_uniform = UniformPolicy(
-        -np.ones(dim.ac), np.ones(dim.ac), seed=np_random.randint(100))
-    policy_uniform.dim = pi.dim
+    if is_finetune:
+        explore_policy = pi
+        do_train = TRAIN_VF
+    else:
+        explore_policy = UniformPolicy(
+            -np.ones(dim.ac), np.ones(dim.ac), seed=np_random.randint(100))
+        explore_policy.dim = pi.dim
+        do_train = TRAIN_NONE
 
     exploration_gen = sysid_simple_generator(sess,
-        policy_uniform, env, stochastic=True, test=False,
+        explore_policy, env, stochastic=True, test=False,
         callback=per_step_callback)
 
     for i, seg in enumerate(it.islice(exploration_gen, explore_epochs)):
@@ -241,7 +265,7 @@ def learn(
         do_train = replay_buf.size > 2000
         #print(f"exploration epoch {i} complete")
 
-    do_train = True
+    do_train = TRAIN_ALL
 
     #print("begin policy rollouts")
 
