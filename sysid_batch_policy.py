@@ -157,11 +157,11 @@ class SysIDPolicy(object):
             self.restore(sess, self.load_dir)
 
     def save(self, sess, path):
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(self.all_vars)
         saver.save(sess, path)
 
     def restore(self, sess, path):
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(self.all_vars)
         saver.restore(sess, path)
 
 

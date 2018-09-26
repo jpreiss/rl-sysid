@@ -86,9 +86,14 @@ class Spec(dict):
         blob = json.dumps(self, sort_keys=True).encode("utf-8")
         return str(hashlib.md5(blob).hexdigest()[:8])
 
+    def copy(self):
+        return type(self)(specdict=self)
+
     def assert_is_scalar(self):
+        list_keys = ["exact_seed"]
         for k, v in self.items():
-            assert not type(v) == list, f"spec[{k}] is not scalar"
+            if k not in list_keys:
+                assert not type(v) == list, f"spec[{k}] is not scalar"
 
     def strip_singleton_lists(self):
         s = self.copy()
@@ -96,6 +101,17 @@ class Spec(dict):
             if type(v) == list and len(v) == 1:
                 s[k] = v[0]
         return Spec(s)
+
+    def canonical_seed(self):
+        self.assert_is_scalar()
+        if "exact_seed" in self:
+            assert self["seed"] == None
+            s = self["exact_seed"]
+            if type(s) is int:
+                return s
+            return s[0]
+        else:
+            return self["seed"]
 
     def dir(self):
         return self["directory"]
@@ -162,11 +178,21 @@ def multispec_union(specs: List[Spec]) -> Spec:
 # our wrapper allowing to pass extra args to the batch environment ctors.
 def make_env(spec, **kwargs) -> gym.Env:
 
+    if "exact_seed" in spec:
+        assert spec["seed"] is None
+        seeds = deepcopy(spec["exact_seed"])
+        if type(seeds) is int:
+            seeds = [seeds]
+    else:
+        npr = np.random.RandomState(spec["seed"])
+        seeds = [npr.randint(100000) for _ in range(spec["n_total"])]
+
     kwargs = deepcopy(kwargs)
-    for key in ["n_batch", "n_total", "randomness", "ep_len"]:
+    kwargs["seeds"] = seeds
+    for key in ["n_batch", "randomness", "ep_len"]:
         kwargs[key] = spec[key]
-    spec = gym.envs.registry.env_specs[spec["env"]]
-    return spec.make(**kwargs)
+    gym_spec = gym.envs.registry.env_specs[spec["env"]]
+    return gym_spec.make(**kwargs)
 
 
 def get_dim(spec: Spec, env: gym.Env) -> Dim:
@@ -192,7 +218,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
     spec.assert_is_scalar()
     flavor = spec["flavor"]
     alpha_sysid = spec["alpha_sysid"]
-    logstd_is_fn = spec["algorithm"] in ["sac"]
+    logstd_is_fn = spec["logstd_is_fn"]
 
     activation = {"relu": tf.nn.relu, "selu": tf.nn.selu}[spec["activation"]]
 
@@ -228,9 +254,8 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
     spec.assert_is_scalar()
 
     env = make_env(spec)
-
-    seed = int(spec["seed"])
-    env.seed(seed)
+    env.seed()
+    seed = spec.canonical_seed()
     var_init_npr = np.random.RandomState(seed)
 
     dim = get_dim(spec, env)
@@ -320,11 +345,8 @@ def test(spec: Spec, load_dir: SaverDir, save_path: TestPath,
 
     tweak = spec["test_tweak"] if spec["test_mode"] == "tweak" else 0.0
     env = make_env(spec, tweak=tweak)
-
-    seed = int(spec["seed"])
-    if spec["test_mode"] == "resample":
-        seed += 100
-    env.seed(seed)
+    env.seed()
+    seed = spec.canonical_seed()
     var_init_npr = np.random.RandomState(seed)
 
     g = tf.Graph()
@@ -376,22 +398,29 @@ def grid(specs: List[Spec], fn, arg_fn, n_procs: int, always_spawn=False):
         return results
 
 
-def train_multispec(spec: Spec, rootdir: MultiSpecDir, n_procs: int, load_dir: Optional[SaverDir]=None):
+def train_multispec(spec: Spec, rootdir: MultiSpecDir, n_procs: int,
+    specs=None, load_dir: Optional[SaverDir]=None):
 
-    specs = multispec_product(spec)
+    if not specs:
+        specs = multispec_product(spec)
     # tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
     # print("Child TensorBoard process:", tboard_process.pid)
     try:
         def arg_fn(spec):
             save_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
-            return spec, rootdir, load_dir
+            return spec, save_dir, load_dir
         grid(specs, train, arg_fn, n_procs)
     finally:
         # tboard_process.kill()
         pass
 
 
-def test_multispec(multispec, rootdir: MultiSpecDir, n_sysid_samples: int, n_procs: int, load_override: Optional[SaverDir]=None):
+def test_multispec(multispec, rootdir: MultiSpecDir, n_sysid_samples: int, n_procs: int,
+    specs=None, load_override: Optional[SaverDir]=None):
+
+    if not specs:
+        specs = multispec_product(multispec)
+
     def arg_fn(spec):
         if load_override is not None:
             load_dir = load_override
@@ -399,7 +428,7 @@ def test_multispec(multispec, rootdir: MultiSpecDir, n_sysid_samples: int, n_pro
             load_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
         save_path = os.path.join(rootdir, spec.dir(), Spec.test_pickle_name)
         return spec, load_dir, save_path, n_sysid_samples
-    specs = multispec_product(multispec)
+
     grid(specs, test, arg_fn, n_procs)
 
 
@@ -692,3 +721,27 @@ def check_spec_dir(spec: Spec, rootdir: str) -> str:
             break
 
     return path
+
+
+class Progress(object):
+    def __init__(self, total_work, print_every_percent=10):
+
+        self.total = float(total_work)
+        self.n = 0
+        self.last_emitted = -1
+        self.chunk = print_every_percent
+
+    def update(self, completed_work):
+        self.n = completed_work
+        percent = 100.0 * (self.n / self.total)
+        print_pct = self.chunk * (int(percent) // self.chunk)
+
+        if print_pct != self.last_emitted:
+            self.last_emitted = print_pct
+            return True, print_pct
+        else:
+            return False, int(percent)
+
+    def add(self, amount):
+        return self.update(self.n + amount)
+
