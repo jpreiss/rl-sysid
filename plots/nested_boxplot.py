@@ -10,18 +10,19 @@ import itertools
 def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 
 	dims = [len(labels) for labels in label_sets]
-	assert len(box_datas) == dims[2]
+	n_outer, n_inner, n_boxes = dims
+	assert len(box_datas) == n_boxes
 
 	# determine figure size
-	n_boxes = int(np.product(dims))
-	width = n_boxes ** 0.75
+	width = np.product(dims) ** 0.75
 	height = width / aspect_ratio
 	fig = plt.figure(figsize=(width, height))
 
 	# determine colors
-	# TODO allow not greyscale (input?)
-	# exp for lighter middle grey in 3-box case
-	greys = np.linspace(0, 1, dims[2]) ** 0.55
+	cmap = plt.get_cmap("tab10")
+	assert n_boxes <= cmap.N
+	colors = np.array([cmap(i) for i in range(n_boxes)])
+	print(colors.shape)
 
 	# set up outermost level
 	outer = gridspec.GridSpec(1, dims[0], wspace=0, top=0.8, bottom=0.2)
@@ -62,9 +63,11 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 			# TODO can we move some of these retroactive changes to the boxplot args?
 
 			# set the colors.
-			for box, median, grey in zip(boxes, p["medians"], greys):
-				box.set_facecolor((grey, grey, grey))
-				if grey < 0.5:
+			for box, median, color in zip(boxes, p["medians"], colors):
+				box.set_facecolor(color)
+				weights = [0.241, 0.691, 0.068]
+				brightness = np.sqrt(np.sum(weights * color[:-1]))
+				if brightness < 0.7:
 					median.set_color("white")
 				else:
 					median.set_color("black")
