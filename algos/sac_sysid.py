@@ -141,8 +141,8 @@ def learn(
 
     # q fn TD-target & losses
     with tf.variable_scope("TD_target"):
-        TD_target = tf.stop_gradient(
-            reward_scale * rew_ph + TD_discount * vf_TDtarget.out)
+        rew_thisstep = reward_scale * rew_ph - pi.alpha_sysid * tf.stop_gradient(pi.estimator_loss)
+        TD_target = tf.stop_gradient(rew_thisstep + TD_discount * vf_TDtarget.out)
 
     with tf.variable_scope("TD_loss1"):
         TD_loss1 = 0.5 * tf.reduce_mean((TD_target - qf1_t.out)**2)
@@ -156,26 +156,30 @@ def learn(
 
 
     # training ops
-    policy_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="policy_adam").minimize(
-        policy_loss, var_list=pi.policy_vars)
+    def make_opt(loss, vars):
+        prefix, *_ = vars[0].name.split("/")
+        name = prefix + "_adam"
+        if False:
+            print(name, "vars:")
+            for v in vars:
+                print(v.name)
+        adam = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name=name)
+        return adam.minimize(loss, var_list=vars)
 
-    vf_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="vf_adam").minimize(
-        vf_loss, var_list=vf.vars)
-
-    qf1_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="qf1_adam").minimize(
-        TD_loss1, var_list=qf1.vars)
-
-    qf2_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="qf2_adam").minimize(
-        TD_loss2, var_list=qf2.vars)
+    policy_opt_op = make_opt(policy_loss, pi.policy_vars)
+    vf_opt_op = make_opt(vf_loss, vf.vars)
+    qf1_opt_op = make_opt(TD_loss1, qf1.vars)
+    qf2_opt_op = make_opt(TD_loss2, qf2.vars)
 
     train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
     vf_train_ops = train_ops[1:]
 
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
-        estimator_opt_op = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="estimator_adam").minimize(
-            pi.estimator_loss, var_list=pi.estimator_vars)
-        #log_scalar("estimator_loss", pi.estimator_loss)
+        estimator_adam = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="estimator_adam")
+        estimator_opt_op = estimator_adam.minimize(pi.estimator_loss, var_list=pi.estimator_vars)
+        log_scalar("estimator_loss_sqrt", tf.sqrt(pi.estimator_loss))
+        train_ops += [estimator_opt_op]
     else:
         estimator_opt_op = None
 
@@ -187,7 +191,8 @@ def learn(
         ]
 
 
-    buf_dims = (dim.ob_concat, dim.ac, 1, dim.ob_concat)
+    buf_dims = (dim.ob_concat, dim.ac, 1, dim.ob_concat,
+        (dim.window, dim.ob), (dim.window, dim.ac))
     replay_buf = ReplayBuffer(buf_len, buf_dims)
 
 
@@ -216,8 +221,10 @@ def learn(
         ac = locals["ac"]
         rew = locals["rew"][:,None]
         ob_next = locals["ob_next"]
+        ob_traj = locals["ob_traj"]
+        ac_traj = locals["ac_traj"]
         # add all agents' steps to replay buffer
-        replay_buf.add_batch(ob, ac, rew, ob_next)
+        replay_buf.add_batch(ob, ac, rew, ob_next, ob_traj, ac_traj)
 
         if do_train == TRAIN_NONE:
             return
@@ -226,12 +233,14 @@ def learn(
 
         # gradient step
         for i in range(n_train_repeat):
-            ot, at, rt, ot1 = replay_buf.sample(np_random, minibatch)
+            ot, at, rt, ot1, obtj, actj = replay_buf.sample(np_random, minibatch)
             feed_dict = {
                 ob_ph: ot,
                 ac_ph: at,
                 rew_ph: rt[:,0],
                 nextob_ph: ot1,
+                ob_traj_ph: obtj,
+                ac_traj_ph: actj,
             }
             # TODO get diagnostics
             sess.run(ops, feed_dict)
@@ -288,6 +297,8 @@ def learn(
 
         logger.log("********** Iteration %i ************"%iters_so_far)
         logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first
+        logger.record_tabular("__alpha__", pi.alpha_sysid)
+        logger.record_tabular("__algorithm", "SAC")
 
         def seg_flatten(seg):
             shape = [seg.shape[0] * seg.shape[1]] + list(seg.shape[2:])
@@ -303,7 +314,7 @@ def learn(
         # the estimator must be trained "on-policy" because we reward the policy 
         # for behaving in a way that makes estimation easier.
         # therefore, we don't use the replay buffer to train the estimator.
-        if estimator_opt_op is not None:
+        if False and estimator_opt_op is not None:
             ob_traj = seg_flatten(seg["ob_traj"])
             ac_traj = seg_flatten(seg["ac_traj"])
             assert ob_traj.shape[0] == ob_flat.shape[0]
@@ -322,12 +333,14 @@ def learn(
             logger.record_tabular("estimator_rmse", np.sqrt(sum_mserr / count))
 
         # get all the summary variables
-        ot, at, rt, ot1 = replay_buf.sample(np_random, minibatch)
+        ot, at, rt, ot1, obtj, actj = replay_buf.sample(np_random, minibatch)
         feed_dict = {
             ob_ph: ot,
             ac_ph: at,
             rew_ph: rt[:,0],
             nextob_ph: ot1,
+            ob_traj_ph: obtj,
+            ac_traj_ph: actj,
         }
         logvals = sess.run([v for name, v in logvars], feed_dict)
         for (name, var), val in zip(logvars, logvals):
