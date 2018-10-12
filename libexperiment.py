@@ -218,7 +218,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
     spec.assert_is_scalar()
     flavor = spec["flavor"]
     alpha_sysid = spec["alpha_sysid"]
-    logstd_is_fn = spec["logstd_is_fn"]
+    logstd_is_fn = spec["logstd_is_fn"] and spec["algorithm"] != "ppo"
 
     activation = {"relu": tf.nn.relu, "selu": tf.nn.selu}[spec["activation"]]
 
@@ -242,6 +242,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
                 hid_sizes=hid_sizes, embed_hid_sizes=embed_hid_sizes, activation=activation,
                 alpha_sysid=alpha_sysid, logstd_is_fn=logstd_is_fn,
                 embed_KL_weight=spec["embed_KL_weight"],
+                squash=True,
                 seed=np_random.randint(100),
                 test=test,
                 load_dir=load_dir,
