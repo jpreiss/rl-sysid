@@ -37,7 +37,7 @@ class SysIDPolicy(object):
     # expects you to construct a variable scope for reusing, etc.
     def __init__(self, ob_input, ob_traj_input, ac_traj_input, dim,
                  flavor, hid_sizes, embed_hid_sizes, activation,
-                 logstd_is_fn,
+                 logstd_is_fn, squash,
                  alpha_sysid, embed_KL_weight, seed,
                  test,
                  load_dir=None):
@@ -117,6 +117,7 @@ class SysIDPolicy(object):
             policy = SquashedGaussianPolicy("policy", pol_input,
                 hid_sizes, dim.ac, tf.nn.relu,
                 logstd_is_fn=logstd_is_fn,
+                squash=squash,
                 seed=seed)
             self.logs.append((tf.reduce_mean(policy.std), "mean_action_stddev"))
             self.ac_stochastic = policy.ac
