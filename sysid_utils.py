@@ -189,10 +189,16 @@ def seg_flatten_batches(seg, keys=None):
 class ReplayBuffer(object):
     def __init__(self, N, dims):
         N = int(N)
-        self.bufs = tuple(np.zeros((N, d)) for d in dims)
+        def arrdim(d):
+            if type(d) is tuple:
+                return (N,) + d
+            else:
+                return (N, d)
+        self.bufs = tuple(np.zeros(arrdim(d)) for d in dims)
         self.N = N
         self.size = 0
         self.cursor = 0
+
 
     def add(self, *args):
         if self.size < self.N:
@@ -203,6 +209,7 @@ class ReplayBuffer(object):
         for buf, item in zip(self.bufs, args):
             buf[self.cursor] = item
         self.cursor = (self.cursor + 1) % self.N
+
 
     def add_batch(self, *args):
 
