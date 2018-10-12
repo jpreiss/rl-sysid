@@ -58,6 +58,7 @@ def learn(
     vf_grad_thru_embed,# whether to allow the value function's gradient to pass through the embedder or not
 
     adam_epsilon=1e-8,
+    init_buf=None,
     ):
 
     # set up so we do tensorboard and csv logging
@@ -189,6 +190,11 @@ def learn(
 
     buf_dims = (dim.ob_concat, dim.ac, 1, dim.ob_concat)
     replay_buf = ReplayBuffer(buf_len, buf_dims)
+
+    if init_buf is not None:
+        assert init_buf.is_compatible(replay_buf)
+        assert init_buf.size() < buf_len
+        replay_buf.merge(init_buf)
 
 
     # init tf
