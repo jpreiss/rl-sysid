@@ -225,6 +225,17 @@ class ReplayBuffer(object):
             assert self.size == self.N
             self.add_batch(*(arg[split:] for arg in args))
 
+    def merge(self, other):
+        self.add_batch(*other.bufs)
+
+    def capacity(self):
+        return self.N
+
+    def is_compatible(self, other):
+        for b1, b2 in zip(self.bufs, other.bufs):
+            if b1.shape[1:] != b2.shape[1:]:
+                return False
+        return True
 
     def sample(self, np_random, batch_size):
         idx = np_random.randint(self.size, size=batch_size)
