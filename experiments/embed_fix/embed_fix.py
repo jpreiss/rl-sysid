@@ -17,8 +17,8 @@ def main():
 
     specs = [s for s in lib.multispec_product(spec)]
 
-    n_procs = 6
-    n_sysid_samples = 1
+    n_procs = 5
+    n_sysid_samples = 4
     lib.train_multispec(spec, rootdir, n_procs)
     lib.test_multispec(spec, rootdir, n_sysid_samples, n_procs)
 
@@ -32,17 +32,16 @@ def main():
     fig = plt.figure(figsize=(6,10))
     plt.style.use("seaborn-dark")
 
-    keys = ["flavor", "alpha_sysid", "learning_rate"]
-    (flavors, alphas, rates), train_table = lib.tabulate(specs, train_rews, keys)
+    keys = ["flavor", "alpha_sysid"]
+    (flavors, alphas), train_table = lib.tabulate(specs, train_rews, keys)
     _, test_table = lib.tabulate(specs, test_rews, keys)
 
-    # collapse (flavor, alpha) axes and seed axis
-    types = [", ".join(str(x) for x in p) for p in it.product(flavors, alphas)]
-    train_table = lib.flatfirst(lib.flatlast(train_table))
-    test_table = lib.flatfirst(lib.flatlast(test_table))
+    # collapse seed axis
+    train_table = lib.flatlast(train_table)
+    test_table = lib.flatlast(test_table)
 
     # nested boxplot expects 3 levels of nesting
-    labels = [types, rates, ["train", "test"]]
+    labels = [flavors, alphas, ["train", "test"]]
     fig = plots.nested_boxplot(labels, train_table, test_table, aspect_ratio=1.2)
     fig.savefig("embed_fix.pdf")
 
