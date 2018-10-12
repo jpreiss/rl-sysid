@@ -67,13 +67,17 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
 
             obs[step,:,:] = ob
 
+            # make locals for easy use in callback
+            ob_traj = ob_trajs[step]
+            ac_traj = ac_trajs[step]
+
             # TODO consider if stochastic or not?
             target = pi.ac_stochastic if stochastic else pi.ac_mean
             feed = { pi.ob : ob }
             if test:
                 feed = {**feed, **{
-                    pi.ob_traj : ob_trajs[step],
-                    pi.ac_traj : ac_trajs[step],
+                    pi.ob_traj : ob_traj,
+                    pi.ac_traj : ac_traj,
                 }}
             # dat tight coupling
             ac, embed, logp, acmean, aclogstd = sess.run([
@@ -93,11 +97,10 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             embeds[step,:,:] = embed
 
             if step < horizon - 1:
-                ob_trajs[step+1] = np.roll(ob_trajs[step], -1, axis=1)
-                ac_trajs[step+1] = np.roll(ac_trajs[step], -1, axis=1)
+                ob_trajs[step+1] = np.roll(ob_traj, -1, axis=1)
+                ac_trajs[step+1] = np.roll(ac_traj, -1, axis=1)
                 ob_trajs[step+1,:,-1,:] = ob[:,:dim.ob]
                 ac_trajs[step+1,:,-1,:] = ac
-
 
             ob_next, rew, _, _ = env.step(ac)
             rews[step,:] = rew
@@ -189,10 +192,16 @@ def seg_flatten_batches(seg, keys=None):
 class ReplayBuffer(object):
     def __init__(self, N, dims):
         N = int(N)
-        self.bufs = tuple(np.zeros((N, d)) for d in dims)
+        def arrdim(d):
+            if type(d) is tuple:
+                return (N,) + d
+            else:
+                return (N, d)
+        self.bufs = tuple(np.zeros(arrdim(d)) for d in dims)
         self.N = N
         self.size = 0
         self.cursor = 0
+
 
     def add(self, *args):
         if self.size < self.N:
@@ -203,6 +212,7 @@ class ReplayBuffer(object):
         for buf, item in zip(self.bufs, args):
             buf[self.cursor] = item
         self.cursor = (self.cursor + 1) % self.N
+
 
     def add_batch(self, *args):
 
@@ -268,31 +278,37 @@ class MLP(object):
 
 class SquashedGaussianPolicy(object):
     def __init__(self, name, input, hid_sizes, output_size, activation,
-                 logstd_is_fn, seed, reg=None, reuse=False):
+                 logstd_is_fn, squash, seed, reg=None, reuse=False):
 
         self.name = name
+        self.squash = squash
 
         if logstd_is_fn:
             self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
             self.mlp.out *= 0.1
             self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
-            self.logstd = tf.clip_by_value(logstd, -2.0, 2.0)
         else:
             self.mlp = MLP(name, input, hid_sizes, output_size, activation, reg, reuse)
             self.mlp.out *= 0.1
             self.mu = self.mlp.out
             init_logstd = -0.3 * np.ones(output_size, dtype=np.float32)
-            self.logstd = tf.get_variable("logstd", initializer=init_logstd)
+            logstd = tf.get_variable("logstd", initializer=init_logstd)
 
+        self.logstd = tf.clip_by_value(logstd, -1.0, 1.0)
         self.std = tf.exp(self.logstd)
         self.pdf = tf.distributions.Normal(loc=self.mu, scale=self.std)
         self.raw_ac = self.pdf.sample(seed=seed)
         self.ac = tf.tanh(self.raw_ac)
 
-        with tf.variable_scope("squashed_entropy_bound"):
-            squash_correction = tf.log(1.0 - tf.tanh(self.mu) ** 2)
-        self.entropy = self.pdf.entropy()
-        self.entropy = tf.reduce_sum(self.entropy + squash_correction, axis=-1)
+        entropy = self.pdf.entropy()
+
+        if squash:
+            with tf.variable_scope("squashed_entropy_bound"):
+                arg_log = tf.maximum(1e-3, 1.0 - tf.tanh(self.mu) ** 2)
+                squash_correction = tf.log(arg_log)
+            entropy += squash_correction
+
+        self.entropy = tf.reduce_sum(entropy, axis=-1)
 
         self.reg_loss = 5e-4 * (
             tf.reduce_mean(self.logstd ** 2) + tf.reduce_mean(self.mu ** 2))
@@ -307,9 +323,11 @@ class SquashedGaussianPolicy(object):
             + tf.reduce_sum(self.logstd, axis=-1)
             + 0.5 * tf.reduce_sum(((raw_actions - self.mu) / self.std) ** 2, axis=-1)
         )
-        EPS = 1e-6
-        squash_correction = tf.reduce_sum(tf.log(1.0 - tf.tanh(raw_actions)**2 + EPS), axis=1)
-        return log_p - squash_correction
+        if self.squash:
+            EPS = 1e-6
+            squash_correction = tf.reduce_sum(tf.log(1.0 - tf.tanh(raw_actions)**2 + EPS), axis=1)
+            log_p -= squash_correction
+        return log_p
 
     def get_params_internal(self):
         return self.mlp.vars
