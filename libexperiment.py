@@ -150,7 +150,8 @@ def multispec_product(spec: Spec) -> List[Spec]:
                 for val in v:
                     spec2 = deepcopy(spec)
                     spec2[k] = val
-                    yield from rec(spec2, os.path.join(prefix, str(val)))
+                    kvname = f"{k}={val}"
+                    yield from rec(spec2, os.path.join(prefix, kvname))
                 return
         # base case
         spec.assert_is_scalar()
@@ -242,7 +243,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
                 hid_sizes=hid_sizes, embed_hid_sizes=embed_hid_sizes, activation=activation,
                 alpha_sysid=alpha_sysid, logstd_is_fn=logstd_is_fn,
                 embed_KL_weight=spec["embed_KL_weight"],
-                squash=True,
+                squash=True, embed_tanh=spec["embed_tanh"],
                 seed=np_random.randint(100),
                 test=test,
                 load_dir=load_dir,
