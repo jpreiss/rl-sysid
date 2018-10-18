@@ -90,10 +90,13 @@ class Spec(dict):
         return type(self)(specdict=self)
 
     def assert_is_scalar(self):
+        assert len(self.multi_items()) == 0
+
+    def multi_items(self):
         list_keys = ["exact_seed"]
-        for k, v in self.items():
-            if k not in list_keys:
-                assert not type(v) == list, f"spec[{k}] is not scalar"
+        def is_multi(k, v):
+            return type(v) == list and k not in list_keys
+        return {k: v for k, v in self.items() if is_multi(k, v)}
 
     def strip_singleton_lists(self):
         s = self.copy()
@@ -150,7 +153,7 @@ def multispec_product(spec: Spec) -> List[Spec]:
                 for val in v:
                     spec2 = deepcopy(spec)
                     spec2[k] = val
-                    kvname = f"{k}={val}"
+                    kvname = f"{k}_{val}"
                     yield from rec(spec2, os.path.join(prefix, kvname))
                 return
         # base case
@@ -272,6 +275,16 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
 
+    opt = spec["optimizer"].lower()
+    if opt == "adam":
+        opt_fn = lambda lr: tf.train.AdamOptimizer(lr, epsilon=1e-4)
+    elif opt == "rmsprop":
+        opt_fn = lambda lr: tf.train.RMSPropOptimizer(lr)
+    elif opt == "momentum":
+        opt_fn = lambda lr: tf.train.MomentumOptimizer(lr, momentum=0.9)
+    else:
+        raise ValueError("unknown optimizer type in Spec")
+
     with tf.Session(config=config, graph=g) as sess:
         algo = spec["algorithm"]
         if algo == "trpo":
@@ -285,6 +298,7 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
                 entcoeff=spec["entropy_coeff"],
                 logdir=mydir)
         elif algo == "ppo":
+            raise NotImplementedError("opt_fn")
             trained_policy = algos.ppo_sysid.learn(
                 sess, env.np_random, env, dim, policy_fn,
                 max_iters=spec["train_iters"],
@@ -316,7 +330,7 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
             hid_sizes = [spec["hidden_sz"]] * spec["n_hidden"]
 
             trained_policy = algos.sac_sysid.learn(
-                sess, env.np_random, env, dim, policy_fn,
+                sess, env.np_random, env, dim, policy_fn, opt_fn,
                 vf_hidden=hid_sizes,
                 learning_rate=spec["learning_rate"],
                 max_iters=spec["train_iters"],
@@ -405,15 +419,15 @@ def train_multispec(spec: Spec, rootdir: MultiSpecDir, n_procs: int,
 
     if not specs:
         specs = multispec_product(spec)
-    # tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
-    # print("Child TensorBoard process:", tboard_process.pid)
+    tboard_process = subprocess.Popen(["tensorboard", "--logdir", rootdir])
+    print("Child TensorBoard process:", tboard_process.pid)
     try:
         def arg_fn(spec):
             save_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
             return spec, save_dir, load_dir
         grid(specs, train, arg_fn, n_procs)
     finally:
-        # tboard_process.kill()
+        tboard_process.kill()
         pass
 
 
@@ -482,6 +496,9 @@ def group_by(specs: List[Spec], attached: list, key: str) -> List[Tuple[Any, Tup
     return [(v, get(v)) for v in vals]
 
 
+# returns:
+#   List[List] outer dim is key, inner dim is all values of that key
+#   np.ndarray with first len(keys) dimensions for key-vals, rest are dim(attached[0])
 def tabulate(specs: List[Spec], attached: list, keys) -> Tuple[List[list], np.ndarray]:
     assert len(specs) == len(attached)
     if len(keys) == 0:
@@ -621,6 +638,12 @@ def action_conditional(sess, env_id, test_state, flavor, seed, mydir):
             yield name, x, actions
 
     return list(gen())
+
+
+
+
+
+
 
 
 # generate data for plotting the mapping from SysID dimension to embedding.
