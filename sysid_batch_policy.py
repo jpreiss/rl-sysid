@@ -105,6 +105,7 @@ class SysIDPolicy(object):
             elif flavor == EMBED:
                 embedder = MLP("embedder", sysid,
                     embed_hid_sizes, dim.embed, activation=activation).out
+                # DEBUG embedder = tf.stop_gradient(embedder)
                 embed_KL = tf.reduce_mean(kl_from_unit_normal(embedder))
                 self.extra_rewards.append(-embed_KL_weight * embed_KL)
                 self.extra_reward_names.append("neg_embed_KL")
@@ -149,8 +150,9 @@ class SysIDPolicy(object):
         self.vf_input = concat_notnone([ob, vf_input], axis=-1)
 
         # store variable collections for tf optimizers.
-        self.policy_vars = tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, pol_scope)
+        vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, pol_scope)
+        self.policy_vars = [v for v in vars if "embedder" not in v.name]
+        self.embedder_vars = [v for v in vars if "embedder" in v.name]
         self.estimator_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, estimator_scope)
         self.all_vars = self.policy_vars + self.estimator_vars

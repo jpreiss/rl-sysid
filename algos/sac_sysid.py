@@ -156,7 +156,7 @@ def learn(
 
 
     # training ops
-    def make_opt(loss, vars):
+    def make_opt(loss, vars, lr):
         prefix, *_ = vars[0].name.split("/")
         name = prefix + "_optimizer"
         if False:
@@ -164,16 +164,21 @@ def learn(
             for v in vars:
                 print(v.name)
         with tf.variable_scope(name):
-            opt = opt_func(learning_rate)
+            opt = opt_func(lr)
             return opt.minimize(loss, var_list=vars)
 
-    policy_opt_op = make_opt(policy_loss, pi.policy_vars)
-    vf_opt_op = make_opt(vf_loss, vf.vars)
-    qf1_opt_op = make_opt(TD_loss1, qf1.vars)
-    qf2_opt_op = make_opt(TD_loss2, qf2.vars)
+    policy_opt_op = make_opt(policy_loss, pi.policy_vars, learning_rate)
+    vf_opt_op = make_opt(vf_loss, vf.vars, learning_rate)
+    qf1_opt_op = make_opt(TD_loss1, qf1.vars, learning_rate)
+    qf2_opt_op = make_opt(TD_loss2, qf2.vars, learning_rate)
 
     train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
-    vf_train_ops = train_ops[1:]
+    vf_train_ops = train_ops[1:].copy()
+
+    if pi.embedder_vars:
+        print("optimizing embedder variables separately.")
+        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, 0.1 * learning_rate)
+        train_ops.append(embedder_opt_op)
 
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
