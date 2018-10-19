@@ -177,7 +177,8 @@ def learn(
 
     if pi.embedder_vars:
         print("optimizing embedder variables separately.")
-        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, 0.1 * learning_rate)
+        anneal_lr = tf.Variable(0.2 * learning_rate)
+        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, anneal_lr)
         train_ops.append(embedder_opt_op)
 
     # SysID estimator - does not use replay buffer
@@ -301,6 +302,9 @@ def learn(
         if max_iters and iters_so_far >= max_iters:
             #print("breaking due to max iters")
             break
+
+        if pi.embedder_vars:
+            sess.run(tf.assign(anneal_lr, 0.2 * learning_rate * (iters_so_far / float(max_iters))))
 
         logger.log("********** Iteration %i ************"%iters_so_far)
         logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first
