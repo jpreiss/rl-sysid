@@ -39,6 +39,7 @@ def learn(
     env,               # environment w/ OpenAI Gym API
     dim,               # Dimension namedtuple
     policy_func,       # func takes (ob space, ac space, ob input placeholder)
+    opt_func,          # func takes lr, returns tf optimizer object
     vf_hidden,         # array of sizes of hidden layers in MLP learned value functions
     max_iters,         # stop after this many iters (defined by env.ep_len)
     logdir,            # directory to write csv logs
@@ -57,8 +58,6 @@ def learn(
     tau,               # exp. moving avg. speed for value fn estimator
     vf_grad_thru_embed,# whether to allow the value function's gradient to pass through the embedder or not
 
-    adam_epsilon=1e-8,
-    init_buf=None,
     ):
 
     # set up so we do tensorboard and csv logging
@@ -157,28 +156,36 @@ def learn(
 
 
     # training ops
-    def make_opt(loss, vars):
+    def make_opt(loss, vars, lr):
         prefix, *_ = vars[0].name.split("/")
-        name = prefix + "_adam"
+        name = prefix + "_optimizer"
         if False:
             print(name, "vars:")
             for v in vars:
                 print(v.name)
-        adam = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name=name)
-        return adam.minimize(loss, var_list=vars)
+        with tf.variable_scope(name):
+            opt = opt_func(lr)
+            return opt.minimize(loss, var_list=vars)
 
-    policy_opt_op = make_opt(policy_loss, pi.policy_vars)
-    vf_opt_op = make_opt(vf_loss, vf.vars)
-    qf1_opt_op = make_opt(TD_loss1, qf1.vars)
-    qf2_opt_op = make_opt(TD_loss2, qf2.vars)
+    policy_opt_op = make_opt(policy_loss, pi.policy_vars, learning_rate)
+    vf_opt_op = make_opt(vf_loss, vf.vars, learning_rate)
+    qf1_opt_op = make_opt(TD_loss1, qf1.vars, learning_rate)
+    qf2_opt_op = make_opt(TD_loss2, qf2.vars, learning_rate)
 
     train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
-    vf_train_ops = train_ops[1:]
+    vf_train_ops = train_ops[1:].copy()
+
+    if pi.embedder_vars:
+        print("optimizing embedder variables separately.")
+        anneal_lr = tf.Variable(0.2 * learning_rate)
+        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, anneal_lr)
+        train_ops.append(embedder_opt_op)
 
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
-        estimator_adam = tf.train.AdamOptimizer(learning_rate, epsilon=adam_epsilon, name="estimator_adam")
-        estimator_opt_op = estimator_adam.minimize(pi.estimator_loss, var_list=pi.estimator_vars)
+        with tf.variable_scope("estimator_opt"):
+            estimator_opt = opt_func(learning_rate)
+            estimator_opt_op = estimator_opt.minimize(pi.estimator_loss, var_list=pi.estimator_vars)
         log_scalar("estimator_loss_sqrt", tf.sqrt(pi.estimator_loss))
         train_ops += [estimator_opt_op]
     else:
@@ -300,6 +307,9 @@ def learn(
         if max_iters and iters_so_far >= max_iters:
             #print("breaking due to max iters")
             break
+
+        if pi.embedder_vars:
+            sess.run(tf.assign(anneal_lr, 0.2 * learning_rate * (iters_so_far / float(max_iters))))
 
         logger.log("********** Iteration %i ************"%iters_so_far)
         logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first
