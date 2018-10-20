@@ -37,7 +37,7 @@ class SysIDPolicy(object):
     # expects you to construct a variable scope for reusing, etc.
     def __init__(self, ob_input, ob_traj_input, ac_traj_input, dim,
                  flavor, hid_sizes, embed_hid_sizes, activation,
-                 logstd_is_fn, squash, embed_tanh,
+                 logstd_is_fn, squash, embed_tanh, embed_stochastic,
                  alpha_sysid, embed_KL_weight, seed,
                  test,
                  load_dir=None):
@@ -111,9 +111,12 @@ class SysIDPolicy(object):
                 self.extra_reward_names.append("neg_embed_KL")
                 if embed_tanh:
                     embedder = tf.tanh(embedder)
+                if embed_stochastic:
+                    dist = tf.distributions.Normal(loc=embedder, scale=0.1)
+                    embedder = dist.sample()
                 self.est_target = embedder
                 pol_input = tf.nn.relu(self.estimator if test else embedder)
-                vf_input = tf.nn.relu(embedder)
+                vf_input = tf.concat([tf.nn.relu(embedder), sysid], axis=1)
                 tf.summary.histogram("embeddings", embedder)
                 tf.summary.scalar("embed_KL", embed_KL)
 
@@ -155,7 +158,7 @@ class SysIDPolicy(object):
         self.embedder_vars = [v for v in vars if "embedder" in v.name]
         self.estimator_vars = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, estimator_scope)
-        self.all_vars = self.policy_vars + self.estimator_vars
+        self.all_vars = self.policy_vars + self.estimator_vars + self.embedder_vars
 
 
     def sess_init(self, sess):

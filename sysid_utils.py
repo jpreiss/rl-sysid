@@ -155,6 +155,7 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             "ep_rews" : ep_rews, "ep_lens" : horizon + 0 * ep_rews,
             "est_true" : embeds, "est" : embed_estimates,
             "est_mserr" : meanerr2s, "sysid_loss" : sysid_loss,
+            "dim" : dim,
         }
 
 
