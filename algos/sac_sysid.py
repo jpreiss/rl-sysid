@@ -48,6 +48,9 @@ def learn(
     learning_rate,     # ...
     init_explore_steps,# explore this many steps with random policy at start
 
+    embedder_lr_mul,  # if not 1.0, trains the embedder with a different (lower) rate
+    embedder_anneal,   # if true, lets embedder_lr_mul decay to zero linearly
+
     is_finetune,
 
     n_train_repeat,    # do this many gradient steps on replay buf each step
@@ -177,8 +180,8 @@ def learn(
 
     if pi.embedder_vars:
         print("optimizing embedder variables separately.")
-        anneal_lr = tf.Variable(0.2 * learning_rate)
-        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, anneal_lr)
+        embedder_lr = tf.Variable(embedder_lr_mul * learning_rate)
+        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, embedder_lr)
         train_ops.append(embedder_opt_op)
 
     # SysID estimator - does not use replay buffer
@@ -309,7 +312,10 @@ def learn(
             break
 
         if pi.embedder_vars:
-            sess.run(tf.assign(anneal_lr, 0.2 * learning_rate * (iters_so_far / float(max_iters))))
+            mul = embedder_lr_mul
+            if embedder_anneal:
+                mul *= iters_so_far / float(max_iters)
+            sess.run(tf.assign(embedder_lr, mul * learning_rate))
 
         logger.log("********** Iteration %i ************"%iters_so_far)
         logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first

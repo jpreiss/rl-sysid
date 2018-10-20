@@ -241,7 +241,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
             embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
             embed_hid_sizes = [embed_middle_size]
             #embed_hid_sizes = []
-            return SysIDPolicy(
+            pol = SysIDPolicy(
                 ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
                 hid_sizes=hid_sizes, embed_hid_sizes=embed_hid_sizes, activation=activation,
                 alpha_sysid=alpha_sysid, logstd_is_fn=logstd_is_fn,
@@ -252,6 +252,11 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
                 test=test,
                 load_dir=load_dir,
             )
+            # HACK!!!
+            if spec["embeder_lr_mul"] == 1.0 and not spec["embedder_anneal"]:
+                spec.policy_vars += spec.embedder_vars
+                spec.embedder_vars = []
+            return pol
     return f
 
 
@@ -338,6 +343,8 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
                 logdir=mydir,
                 tboard_dir=mydir,
                 init_explore_steps=explore_steps,
+                embedder_lr_mul=spec["embedder_lr_mul"],
+                embedder_anneal=spec["embedder_anneal"],
                 is_finetune=is_finetune,
                 n_train_repeat=spec["n_train_repeat"],
                 buf_len=spec["buf_len"],
