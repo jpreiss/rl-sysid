@@ -119,6 +119,15 @@ class Spec(dict):
     def dir(self):
         return self["directory"]
 
+    def label(self, keys, joiner=", "):
+        namesub = {
+            "embed_tanh": "tanh(e)",
+            "alpha_sysid": "\\alpha",
+        }
+        # dict.get accepts default value for missing keys
+        kvs = [f"{namesub.get(k, k)} = {self[k]}" for k in keys]
+        return joiner.join(kvs)
+
     csv_name = "progress.csv"  # TODO pass as arg to logging
     json_name = "config.json"
     saver_name = "trained_model.ckpt"

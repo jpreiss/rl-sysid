@@ -1,48 +1,48 @@
 import itertools as it
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import List, Dict
 
 
-# mode should be one of:
+# rews shapes: [iter, run] (runs could be per-seed or per-seed-agent)
+# style should be one of:
 #   "each"  - plot all seeds as individual lines
 #   "std"   - plot mean and one-std bounds over seeds
 #   "bound" - plot 5% / 95% reward percentiles
-def learning_curves(flavors, alphas, rews, mode="std"):
+# boxwidth: width of box moving average filter
+def learning_curves(labels: List[str], rews: List[np.ndarray],
+    style: str="std", boxwidth: int=11):
 
-    # flavor, alpha, seed, iter, N
-    nflav, nalph, nseed, niter, nenv = rews.shape
-    rews = np.swapaxes(rews, 2, 3).reshape((nflav, nalph, niter, nseed*nenv))
+    ntypes = len(labels)
+    colors = plt.cm.Set1(np.linspace(0, 1, ntypes))
 
-    color_list = plt.cm.Set1(np.linspace(0, 1, nflav * nalph)).reshape((nflav, nalph, -1))
-
-    boxwidth = 13
     def moving_average(x):
         kernel = 1.0 / boxwidth * np.ones(boxwidth)
         return np.convolve(x, kernel, mode="valid")
 
-    for i, flavor in enumerate(flavors):
-        for j, alpha in enumerate(alphas):
-            r = rews[i,j]
-            color = color_list[i,j]
-            label=f"{flavor}, $\\alpha$={alpha}"
-            if mode == "bound":
-                mins = np.percentile(r, 5, axis=-1)
-                maxes = np.percentile(r, 95, axis=-1)
-                mins = moving_average(mins)
-                maxes = moving_average(maxes)
-                x = np.arange(len(mins)) + boxwidth // 2 + 1
-                plt.fill_between(x, mins, maxes, color=color, alpha=0.1)
-                plt.plot(x, mins, color=color, linewidth=1.0, label=label)
-                plt.plot(x, maxes, color=color, linewidth=1.0)
-            elif mode == "std":
-                means = moving_average(np.mean(r, axis=-1))
-                stds = moving_average(np.std(r, axis=-1))
-                x = np.arange(len(means)) + boxwidth // 2 + 1
-                plt.fill_between(x, means - stds, means + stds, color=color, alpha=0.1)
-                plt.plot(x, means, color=color, linewidth=2.0, label=label)
-            else:
-                for run in r.T:
-                    plt.plot(run, color=color)
+    for label, color, r in zip(labels, colors, rews):
+        if style == "bound":
+            mins = np.percentile(r, 5, axis=-1)
+            maxes = np.percentile(r, 95, axis=-1)
+            mins = moving_average(mins)
+            maxes = moving_average(maxes)
+            x = np.arange(len(mins)) + boxwidth // 2 + 1
+            plt.fill_between(x, mins, maxes, color=color, alpha=0.1)
+            plt.plot(x, mins, color=color, linewidth=1.0, label=label)
+            plt.plot(x, maxes, color=color, linewidth=1.0)
+        elif style == "std":
+            means = moving_average(np.mean(r, axis=-1))
+            stds = moving_average(np.std(r, axis=-1))
+            x = np.arange(len(means)) + boxwidth // 2 + 1
+            plt.fill_between(x, means - stds, means + stds, color=color, alpha=0.1)
+            plt.plot(x, means, color=color, linewidth=2.0, label=label)
+        elif style == "each":
+            handles = []
+            for run in r.T:
+                handles += plt.plot(run, color=color)
+            handles[0].set_label(label)
+        else:
+            raise ValueError("invalid plot style")
 
 
     plt.grid(True, axis="y")
