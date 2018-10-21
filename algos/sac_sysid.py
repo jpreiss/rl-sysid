@@ -61,6 +61,7 @@ def learn(
     tau,               # exp. moving avg. speed for value fn estimator
     vf_grad_thru_embed,# whether to allow the value function's gradient to pass through the embedder or not
 
+    init_buf=None,     # can pass in some initial data for the replay buffer
     ):
 
     # set up so we do tensorboard and csv logging
