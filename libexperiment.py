@@ -241,7 +241,7 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
             embed_middle_size = 2 * int(np.sqrt(dim.sysid * dim.embed))
             embed_hid_sizes = [embed_middle_size]
             #embed_hid_sizes = []
-            pol = SysIDPolicy(
+            pi = SysIDPolicy(
                 ob_input, ob_traj_input, ac_traj_input, flavor=flavor, dim=dim,
                 hid_sizes=hid_sizes, embed_hid_sizes=embed_hid_sizes, activation=activation,
                 alpha_sysid=alpha_sysid, logstd_is_fn=logstd_is_fn,
@@ -253,10 +253,10 @@ def make_batch_policy_fn(np_random: np.random.RandomState,
                 load_dir=load_dir,
             )
             # HACK!!!
-            if spec["embeder_lr_mul"] == 1.0 and not spec["embedder_anneal"]:
-                spec.policy_vars += spec.embedder_vars
-                spec.embedder_vars = []
-            return pol
+            if spec["embedder_lr_mul"] == 1.0 and not spec["embedder_anneal"]:
+                pi.policy_vars += pi.embedder_vars
+                pi.embedder_vars = []
+            return pi
     return f
 
 
