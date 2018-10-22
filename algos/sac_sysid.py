@@ -50,6 +50,7 @@ def learn(
 
     embedder_lr_mul,  # if not 1.0, trains the embedder with a different (lower) rate
     embedder_anneal,   # if true, lets embedder_lr_mul decay to zero linearly
+    estimator_lr_mul, # as above, for estimator
 
     is_finetune,
 

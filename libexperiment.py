@@ -354,6 +354,7 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
                 init_explore_steps=explore_steps,
                 embedder_lr_mul=spec["embedder_lr_mul"],
                 embedder_anneal=spec["embedder_anneal"],
+                estimator_lr_mul=spec["estimator_lr_mul"],
                 is_finetune=is_finetune,
                 n_train_repeat=spec["n_train_repeat"],
                 buf_len=spec["buf_len"],
@@ -460,6 +461,10 @@ def test_multispec(multispec, rootdir: MultiSpecDir, n_sysid_samples: int, n_pro
         else:
             load_dir = os.path.join(rootdir, spec.dir(), Spec.saver_name)
         save_path = os.path.join(rootdir, spec.dir(), Spec.test_pickle_name)
+
+        # HACK!!
+        spec["seed"] += 1000
+
         return spec, load_dir, save_path, n_sysid_samples
 
     grid(specs, test, arg_fn, n_procs)
