@@ -189,7 +189,7 @@ def learn(
     # SysID estimator - does not use replay buffer
     if len(pi.estimator_vars) > 0:
         with tf.variable_scope("estimator_opt"):
-            estimator_opt = opt_func(learning_rate)
+            estimator_opt = opt_func(estimator_lr_mul * learning_rate)
             estimator_opt_op = estimator_opt.minimize(pi.estimator_loss, var_list=pi.estimator_vars)
         log_scalar("estimator_loss_sqrt", tf.sqrt(pi.estimator_loss))
         train_ops += [estimator_opt_op]
