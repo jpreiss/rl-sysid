@@ -111,10 +111,10 @@ class SysIDPolicy(object):
                 self.extra_reward_names.append("neg_embed_KL")
                 if embed_tanh:
                     embedder = tf.tanh(embedder)
+                self.est_target = embedder
                 if embed_stochastic:
                     dist = tf.distributions.Normal(loc=embedder, scale=0.1)
                     embedder = dist.sample()
-                self.est_target = embedder
                 pol_input = tf.nn.relu(self.estimator if test else embedder)
                 vf_input = tf.concat([tf.nn.relu(embedder), sysid], axis=1)
                 tf.summary.histogram("embeddings", embedder)
