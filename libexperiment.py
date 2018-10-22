@@ -612,12 +612,13 @@ def print_anova(flat_rews):
     print("ANOVA individual seed results: f = {}, p = {}".format(f, p))
 
 
-def load_learning_curve(spec, rootdir):
+def load_learning_curve(spec, rootdir, keys=None):
     path = os.path.join(rootdir, spec.dir(), Spec.csv_name)
     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
-    col_names = ["Env{}Rew".format(i) for i in range(spec["n_batch"])]
-    rews = np.column_stack([data[c] for c in col_names])
-    return rews
+    if keys is None:
+        keys = ["Env{}Rew".format(i) for i in range(spec["n_batch"])]
+    curves = np.column_stack([data[k] for k in keys])
+    return curves
 
 
 def embed_scatter_data(segs):
