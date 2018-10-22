@@ -22,7 +22,6 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 	cmap = plt.get_cmap("tab10")
 	assert n_boxes <= cmap.N
 	colors = np.array([cmap(i) for i in range(n_boxes)])
-	print(colors.shape)
 
 	# set up outermost level
 	outer = gridspec.GridSpec(1, dims[0], wspace=0, top=0.8, bottom=0.2)
@@ -103,7 +102,7 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 				fig.add_subplot(ax)
 				ax_with_yticks = ax
 
-			ax.set_xlabel(inlab)
+			ax.set_xlabel(f"$\\mathrm{{{inlab}}}$")
 			all_axes.append(ax)
 
 	# expand to make sure we get the outer grid lines
