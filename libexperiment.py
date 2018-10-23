@@ -617,7 +617,12 @@ def load_learning_curve(spec, rootdir, keys=None):
     data = np.genfromtxt(path, names=True, delimiter=",", dtype=np.float64)
     if keys is None:
         keys = ["Env{}Rew".format(i) for i in range(spec["n_batch"])]
-    curves = np.column_stack([data[k] for k in keys])
+    try:
+        curves = np.column_stack([data[k] for k in keys])
+    except ValueError as e:
+        namestr = " ".join(sorted(data.dtype.names, key=lambda s: s.lower()))
+        raise KeyError("note: valid keys are: " + namestr) from e
+
     return curves
 
 
