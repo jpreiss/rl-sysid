@@ -363,6 +363,7 @@ def train(spec: Spec, save_dir: SaverDir, load_dir: Optional[SaverDir]=None):
                 reward_scale=spec["reward_scale"],
                 tau=spec["tau"],
                 vf_grad_thru_embed=spec["vf_grad_thru_embed"],
+                log_header=spec["directory"],
             )
         else:
             assert False, "invalid choice of RL algorithm: " + algo

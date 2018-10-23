@@ -63,6 +63,8 @@ def learn(
     vf_grad_thru_embed,# whether to allow the value function's gradient to pass through the embedder or not
 
     init_buf=None,     # can pass in some initial data for the replay buffer
+
+    log_header=None,   # a string to print when dumping info to the console each iteration
     ):
 
     # set up so we do tensorboard and csv logging
@@ -161,9 +163,10 @@ def learn(
 
 
     # training ops
-    def make_opt(loss, vars, lr):
-        prefix, *_ = vars[0].name.split("/")
-        name = prefix + "_optimizer"
+    def make_opt(loss, vars, lr, name=None):
+        if name is None:
+            prefix, *_ = vars[0].name.split("/")
+            name = prefix + "_optimizer"
         if False:
             print(name, "vars:")
             for v in vars:
@@ -172,7 +175,7 @@ def learn(
             opt = opt_func(lr)
             return opt.minimize(loss, var_list=vars)
 
-    policy_opt_op = make_opt(policy_loss, pi.policy_vars, learning_rate)
+    policy_opt_op = make_opt(policy_loss, pi.policy_vars, learning_rate, name="pi_optimizer")
     vf_opt_op = make_opt(vf_loss, vf.vars, learning_rate)
     qf1_opt_op = make_opt(TD_loss1, qf1.vars, learning_rate)
     qf2_opt_op = make_opt(TD_loss2, qf2.vars, learning_rate)
@@ -183,7 +186,7 @@ def learn(
     if pi.embedder_vars:
         print("optimizing embedder variables separately.")
         embedder_lr = tf.Variable(embedder_lr_mul * learning_rate)
-        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, embedder_lr)
+        embedder_opt_op = make_opt(policy_loss, pi.embedder_vars, embedder_lr, name="embed_optimzer")
         train_ops.append(embedder_opt_op)
 
     # SysID estimator - does not use replay buffer
@@ -320,9 +323,7 @@ def learn(
             sess.run(tf.assign(embedder_lr, mul * learning_rate))
 
         logger.log("********** Iteration %i ************"%iters_so_far)
-        logger.record_tabular("__flavor__", pi.flavor) # underscore for sorting first
-        logger.record_tabular("__alpha__", pi.alpha_sysid)
-        logger.record_tabular("__algorithm", "SAC")
+        logger.log(log_header)
 
         def seg_flatten(seg):
             shape = [seg.shape[0] * seg.shape[1]] + list(seg.shape[2:])
