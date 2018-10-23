@@ -48,7 +48,7 @@ def learning_curves(labels: List[str], rews: List[np.ndarray],
     plt.grid(True, axis="y")
     plt.xlabel('iteration')
     plt.ylabel('reward per episode')
-    plt.legend(loc='lower right')
+    plt.legend()
     return plt.gcf()
 
 if __name__ == "__main__":
