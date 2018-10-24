@@ -10,7 +10,7 @@ import numpy as np
 import libexperiment as lib
 import plots
 
-def main(rootdir, outpath, condense_seed=True, transpose=False):
+def main(rootdir, outpath, transpose=False):
 
     spec_path = os.path.join(rootdir, "config.json")
     with open(spec_path) as f:
@@ -21,13 +21,9 @@ def main(rootdir, outpath, condense_seed=True, transpose=False):
     multis = multispec.multi_items()
     if "seed" in multis:
         del multis["seed"]
-    items = sorted(multis.items())
+    keys = sorted(multis.keys())
     if transpose:
-        items = reversed(items)
-    keys, multivals = zip(*items)
-    if len(keys) > 2 + int(condense_seed):
-        # TODO: condense excess keys into Cartesian product
-        raise NotImplementedError("handle other amounts of keys")
+        keys = list(reversed(keys))
 
     learning_curves = [lib.load_learning_curve(s, rootdir) for s in specs]
     # TODO not magic number
@@ -44,40 +40,45 @@ def main(rootdir, outpath, condense_seed=True, transpose=False):
     fig = plt.figure(figsize=(6,10))
     plt.style.use("seaborn-dark")
 
-
     multivals, train_table = lib.tabulate(specs, train_rews, keys)
     _, test_table = lib.tabulate(specs, test_rews, keys)
-    # TODO why does tabulate add a singleton dimension for (flavor, seed)
 
-    # collapse seed axis (TODO: more numpy-ish way?)
-    if "seed" in keys and condense_seed:
-        raise NotImplementedError
-        iseed = keys.index("seed")
-        order = range(iseed) + range(iseed + 1, len(keys)) + [iseed]
-        train_table = lib.flatlast(train_table.permute(order))
-        test_table = lib.flatlast(test_table.permute(order))
-
-    sh = train_table.shape[:len(keys)]
-    assert test_table.shape[:len(keys)] == sh
-    train_table = train_table.reshape((sh) + (-1,))
-    test_table = test_table.reshape((sh) + (-1,))
+    import pdb; pdb.set_trace()
 
     # TODO move to lib ?
-    namesub = {
-        "embed_tanh": "tanh(e)",
-        "alpha_sysid": "\\alpha",
-    }
-    multivals = [[f"{namesub.get(k, k)} = {v}" for v in mv] for k, mv in zip(keys, multivals)]
-    labels = multivals + [("train", "test")]
-    if len(multivals) == 1:
+    def kv_string(k, v):
+        namesub = {
+            "embed_tanh": "tanh(e)",
+            "alpha_sysid": "\\alpha",
+        }
+        return f"{namesub.get(k, k)} = {v}"
+
+    labels = [[kv_string(k, v) for v in mv] for k, mv in zip(keys, multivals)]
+
+    if len(keys) > 2:
+        collapsed = list(it.product(*labels[:-1]))
+        newshape = (len(collapsed), len(labels[-1]), -1)
+        labels = [["_".join(t) for t in collapsed]] + labels[-1:]
+    else:
+        newshape = (len(mv) for mv in multivals) + (-1,)
+
+    train_table = train_table.reshape(newshape)
+    test_table = test_table.reshape(newshape)
+    labels += [("train", "test")]
+
+    if len(labels) == 2:
         print("prepending dummy dimension")
         # TODO actually handle this well
-        labels = [("foo", "bar")] + labels
+        labels = [("dummy_1", "dummy_2")] + labels
         keys = ("dummy",) + keys
         train_table = np.stack([train_table, train_table])
         test_table = np.stack([test_table, test_table])
+
     fig = plots.nested_boxplot(labels, train_table, test_table, aspect_ratio=1.2)
+    print("saving to", outpath)
     fig.savefig(outpath)
+
+    return
 
     texpath = os.path.splitext(outpath)[0] + ".csv"
     columns = {
@@ -112,7 +113,6 @@ if __name__ == "__main__":
     parser.add_argument("rootdir", type=str)
     parser.add_argument("outpath", type=str)
     parser.add_argument("--transpose", action="store_true")
-    parser.add_argument("--condense-seed", action="store_true")
     args = parser.parse_args()
 
-    main(args.rootdir, args.outpath, args.condense_seed, args.transpose)
+    main(args.rootdir, args.outpath, args.transpose)
