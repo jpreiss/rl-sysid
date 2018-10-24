@@ -193,8 +193,9 @@ def learn(
     if len(pi.estimator_vars) > 0:
         with tf.variable_scope("estimator_opt"):
             estimator_opt = opt_func(estimator_lr_mul * learning_rate)
-            estimator_opt_op = estimator_opt.minimize(pi.estimator_loss, var_list=pi.estimator_vars)
-        log_scalar("estimator_loss_sqrt", tf.sqrt(pi.estimator_loss))
+            mean_estloss = tf.reduce_mean(pi.estimator_loss)
+            estimator_opt_op = estimator_opt.minimize(mean_estloss, var_list=pi.estimator_vars)
+        log_scalar("estimator_loss_sqrt", tf.sqrt(mean_estloss))
         train_ops += [estimator_opt_op]
     else:
         estimator_opt_op = None
@@ -242,8 +243,8 @@ def learn(
         ac = locals["ac"]
         rew = locals["rew"][:,None]
         ob_next = locals["ob_next"]
-        ob_traj = locals["ob_traj"]
-        ac_traj = locals["ac_traj"]
+        ob_traj = locals["ob_traj_after"]
+        ac_traj = locals["ac_traj_after"]
         # add all agents' steps to replay buffer
         replay_buf.add_batch(ob, ac, rew, ob_next, ob_traj, ac_traj)
 

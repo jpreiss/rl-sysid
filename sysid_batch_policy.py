@@ -106,7 +106,7 @@ class SysIDPolicy(object):
                 embedder = MLP("embedder", sysid,
                     embed_hid_sizes, dim.embed, activation=activation).out
                 # DEBUG embedder = tf.stop_gradient(embedder)
-                embed_KL = tf.reduce_mean(kl_from_unit_normal(embedder))
+                embed_KL = tf.reduce_mean(kl_from_unit_normal(embedder), name="embed_KL")
                 self.extra_rewards.append(-embed_KL_weight * embed_KL)
                 self.extra_reward_names.append("neg_embed_KL")
                 if embed_tanh:
@@ -144,9 +144,10 @@ class SysIDPolicy(object):
 
         # estimator L2 training loss.
         with tf.variable_scope("estimator_loss"):
-            self.estimator_loss = tf.losses.mean_squared_error(
-                self.estimator, tf.stop_gradient(self.est_target))
-            self.logs.append((tf.sqrt(self.estimator_loss), "rmse_estimator"))
+            err = self.estimator - tf.stop_gradient(self.est_target)
+            self.estimator_loss = tf.reduce_mean(err ** 2, axis=-1)
+            rmse = tf.sqrt(tf.reduce_mean(self.estimator_loss))
+            self.logs.append((rmse, "rmse_estimator"))
 
         # do not compute the value function here, but specify what its input should be.
         # lets the RL algorithm to use different kinds of value functions e.g. Q vs. V
@@ -201,13 +202,19 @@ class SysIDPolicy(object):
 
 
 # construct the 1D convolutional network for (ob, ac)^k -> SysID
+# if k <= 4, constructs fully connected net only
 def sysid_convnet(input, sysid_dim):
-    conv1 = tf.layers.conv1d(input, filters=64, kernel_size=3, activation=None)
-    conv2 = tf.layers.conv1d(conv1, filters=64, kernel_size=3, activation=tf.nn.relu)
-    # first 2 conv layers without nonlinearity is equivalent to one bigger conv layer
-    # but has better learning properties (TODO: find citation)
-    conv3 = tf.layers.conv1d(conv2, filters=64, kernel_size=3, activation=tf.nn.relu)
-    flat = tf.layers.flatten(conv3)
+    _, window, _ = input.shape.as_list()
+    x = input
+    if window > 4:
+        x = tf.layers.conv1d(x, filters=64, kernel_size=3, activation=None)
+        x = tf.layers.conv1d(x, filters=64, kernel_size=3, activation=tf.nn.relu)
+        # 2 conv layers without nonlinearity is equivalent to one bigger conv layer
+        # but has better learning properties (TODO: find citation)
+    if window > 8:
+        x = tf.layers.conv1d(x, filters=64, kernel_size=3, activation=tf.nn.relu)
+
+    flat = tf.layers.flatten(x)
     #print("convnet flat dim:", flat.shape[1])
     flat2 = tf.layers.dense(flat, 128, activation=tf.nn.relu)
     out = tf.layers.dense(flat2, sysid_dim)
