@@ -68,16 +68,20 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             obs[step,:,:] = ob
 
             # make locals for easy use in callback
-            ob_traj = ob_trajs[step]
-            ac_traj = ac_trajs[step]
+            if step > 0:
+                ob_traj_before = ob_trajs[step - 1]
+                ac_traj_before = ac_trajs[step - 1]
+            else:
+                ob_traj_before = 0.0 * ob_trajs[0]
+                ac_traj_before = 0.0 * ac_trajs[0]
 
             # TODO consider if stochastic or not?
             target = pi.ac_stochastic if stochastic else pi.ac_mean
             feed = { pi.ob : ob }
             if test:
                 feed = {**feed, **{
-                    pi.ob_traj : ob_traj,
-                    pi.ac_traj : ac_traj,
+                    pi.ob_traj : ob_traj_before,
+                    pi.ac_traj : ac_traj_before,
                 }}
             # dat tight coupling
             ac, embed, logp, acmean, aclogstd = sess.run([
@@ -96,11 +100,13 @@ def sysid_simple_generator(sess, pi, env, stochastic, test=False, force_render=N
             logps[step,:] = logp
             embeds[step,:,:] = embed
 
-            if step < horizon - 1:
-                ob_trajs[step+1] = np.roll(ob_traj, -1, axis=1)
-                ac_trajs[step+1] = np.roll(ac_traj, -1, axis=1)
-                ob_trajs[step+1,:,-1,:] = ob[:,:dim.ob]
-                ac_trajs[step+1,:,-1,:] = ac
+            ob_traj_after = np.roll(ob_traj_before, -1, axis=1)
+            ac_traj_after = np.roll(ac_traj_before, -1, axis=1)
+            ob_traj_after[:,-1,:] = ob[:,:dim.ob]
+            ac_traj_after[:,-1,:] = ac
+
+            ob_trajs[step] = ob_traj_after
+            ac_trajs[step] = ac_traj_after
 
             ob_next, rew, _, _ = env.step(ac)
             rews[step,:] = rew
