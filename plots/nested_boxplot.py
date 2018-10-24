@@ -36,7 +36,8 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 		ax.set_xticks([])
 		ax.set_yticks([])
 
-		ax.set_xlabel(f"$\\mathrm{{{outlab}}}$", labelpad=25.0)
+		#ax.set_xlabel(f"$\\mathrm{{{outlab}}}$", labelpad=25.0)
+		ax.set_xlabel(outlab, labelpad=25.0)
 		
 		#ax.set_aspect(8.0)
 		fig.add_subplot(ax)
@@ -102,7 +103,8 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 				fig.add_subplot(ax)
 				ax_with_yticks = ax
 
-			ax.set_xlabel(f"$\\mathrm{{{inlab}}}$")
+			#ax.set_xlabel(f"$\\mathrm{{{inlab}}}$")
+			ax.set_xlabel(inlab)
 			all_axes.append(ax)
 
 	# expand to make sure we get the outer grid lines
@@ -124,7 +126,8 @@ def nested_boxplot(label_sets, *box_datas, aspect_ratio=2.0):
 	right_ax.set_yticklabels(tix)
 	right_ax.tick_params(axis="y", which="both", left=False, right=False)
 
-	plt.legend(boxes, (f"$\\mathrm{{{boxlab}}}$" for boxlab in label_sets[2]),
+	#plt.legend(boxes, (f"$\\mathrm{{{boxlab}}}$" for boxlab in label_sets[2]),
+	plt.legend(boxes, label_sets[2],
 		ncol=dims[2], bbox_to_anchor=(1.05, 1.25), frameon=False, fontsize="medium",
 		handlelength=1.0,
 	)

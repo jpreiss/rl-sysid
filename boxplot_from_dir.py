@@ -43,13 +43,11 @@ def main(rootdir, outpath, transpose=False):
     multivals, train_table = lib.tabulate(specs, train_rews, keys)
     _, test_table = lib.tabulate(specs, test_rews, keys)
 
-    import pdb; pdb.set_trace()
-
     # TODO move to lib ?
     def kv_string(k, v):
         namesub = {
             "embed_tanh": "tanh(e)",
-            "alpha_sysid": "\\alpha",
+            "alpha_sysid": "$\\alpha$",
         }
         return f"{namesub.get(k, k)} = {v}"
 
@@ -58,9 +56,9 @@ def main(rootdir, outpath, transpose=False):
     if len(keys) > 2:
         collapsed = list(it.product(*labels[:-1]))
         newshape = (len(collapsed), len(labels[-1]), -1)
-        labels = [["_".join(t) for t in collapsed]] + labels[-1:]
+        labels = [["\n".join(t) for t in collapsed]] + labels[-1:]
     else:
-        newshape = (len(mv) for mv in multivals) + (-1,)
+        newshape = tuple(len(mv) for mv in multivals) + (-1,)
 
     train_table = train_table.reshape(newshape)
     test_table = test_table.reshape(newshape)
@@ -75,7 +73,6 @@ def main(rootdir, outpath, transpose=False):
         test_table = np.stack([test_table, test_table])
 
     fig = plots.nested_boxplot(labels, train_table, test_table, aspect_ratio=1.2)
-    print("saving to", outpath)
     fig.savefig(outpath)
 
     return
