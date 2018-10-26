@@ -388,4 +388,20 @@ def learn(
             logger.record_tabular("Env{}Rew".format(i), ep_rew[i])
         logger.dump_tabular()
 
+
+    # finish the estimator
+    rmse = tf.sqrt(tf.reduce_mean(pi.estimator_loss))
+    for i in range(10000):
+
+        ot, at, rt, ot1, obtj, actj = replay_buf.sample(np_random, minibatch)
+        feed_dict = {
+            ob_ph: ot,
+            ob_traj_ph: obtj,
+            ac_traj_ph: actj,
+        }
+        # TODO get diagnostics
+        loss, _ = sess.run([rmse, estimator_opt_op], feed_dict)
+
+    print(f"post-train estimator: rmse = {loss:.3f}")
+
     return pi
